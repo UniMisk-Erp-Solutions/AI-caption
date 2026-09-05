@@ -1,4 +1,4 @@
-import { hitTest, measureLayerRect, renderFrame, type CaptionLayer } from '@kc/shared';
+import { hitTest, measureLayerRect, renderFrame, sceneAt, type CaptionLayer } from '@kc/shared';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ensureSceneFonts } from '../../fonts/fonts';
 import { cn } from '../../lib/cn';
@@ -178,22 +178,32 @@ export function CanvasStage({ videoUrl, className }: Props) {
   }, []);
 
   const onPointerDown = (event: React.PointerEvent) => {
-    if (!scene || !state) return;
+    if (!state) return;
     const ctx = measuringCtx();
     if (!ctx) return;
+
+    // Hit test the scene that was actually painted, not `useActiveScene` - that
+    // falls back to the selected scene when the playhead sits in a gap between
+    // scenes, where the canvas is showing nothing at all. Clicking empty video
+    // would otherwise select a layer from a scene that is not on screen.
+    const drawnScene = sceneAt(state, timeMs);
+    if (!drawnScene) {
+      select(null, null);
+      return;
+    }
 
     const point = toNormalized(event);
     // Hit test against the same layout the renderer produced, so what looks
     // clickable is clickable.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const layer = hitTest(ctx, scene, point, frameW, frameH);
+    const layer = hitTest(ctx, drawnScene, point, frameW, frameH, timeMs);
 
     if (!layer) {
-      select(scene.id, null);
+      select(drawnScene.id, null);
       return;
     }
 
-    select(scene.id, layer.id);
+    select(drawnScene.id, layer.id);
     (event.target as Element).setPointerCapture(event.pointerId);
     dragRef.current = {
       kind: 'move',
@@ -282,9 +292,14 @@ export function CanvasStage({ videoUrl, className }: Props) {
   /* ---------------------------------------------------------------- */
 
   const selectedLayer = selection.layerId ? findLayer(selection.layerId) : null;
+  // A frame around text that is not on screen is a box floating over bare
+  // video, and its handles drag something invisible. Show it only while its
+  // layer is actually being drawn.
+  const selectionVisible =
+    !!selectedLayer && timeMs >= selectedLayer.startMs && timeMs <= selectedLayer.endMs;
   const selectionRect = (() => {
     const ctx = measuringCtx();
-    if (!ctx || !selectedLayer) return null;
+    if (!ctx || !selectedLayer || !selectionVisible) return null;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     return measureLayerRect(ctx, selectedLayer, frameW, frameH);
   })();

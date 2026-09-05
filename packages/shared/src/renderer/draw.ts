@@ -520,8 +520,19 @@ export function hitTest(
   point: { x: number; y: number },
   frameW: number,
   frameH: number,
+  timeMs: number,
 ): CaptionLayer | null {
-  const sorted = [...scene.layers].sort((a, b) => b.zIndex - a.zIndex);
+  const sorted = [...scene.layers]
+    // Only what is on screen can be clicked.
+    //
+    // A scene's layers have staggered windows, so at any instant most of them
+    // are not drawn - and their rects still overlap the ones that are. Without
+    // this filter a click lands on an invisible layer, and the user drags
+    // something they cannot see while the text under the cursor sits still.
+    // The predicate is deliberately identical to the one in `renderFrame`:
+    // clickable and visible have to be the same set, or selection lies.
+    .filter((layer) => timeMs >= layer.startMs && timeMs <= layer.endMs)
+    .sort((a, b) => b.zIndex - a.zIndex);
   for (const layer of sorted) {
     const rect = measureLayerRect(ctx, layer, frameW, frameH);
     // Rotate the point into the layer's local space so rotated text still hits.
