@@ -7,10 +7,6 @@ export default defineConfig({
   worker: { format: 'es' },
   build: {
     target: 'es2022',
-    // Vercel resolves its output directory from the repo root, so the bundle
-    // has to land in <repo>/dist rather than apps/web/dist.
-    outDir: '../../dist',
-    emptyOutDir: true,
     // 144 font stylesheets each become their own tiny chunk, so the default
     // warning fires constantly and hides real problems.
     chunkSizeWarningLimit: 900,

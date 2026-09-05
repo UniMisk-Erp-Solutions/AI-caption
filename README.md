@@ -433,10 +433,15 @@ Verified against `test.mp4` (12.1s, 960×720, H.264/AAC):
 
 ## Deploying to Vercel
 
-`vercel.json` is set up for the monorepo: `pnpm build` at the root, output at
-`dist/` in the repo root (Vite writes there from `apps/web`), SPA rewrites, and
-immutable caching for hashed assets. Leave the Root Directory blank and the
-Output Directory override off in Project Settings.
+`vercel.json` is set up for the monorepo: `pnpm build` at the root, SPA
+rewrites, and immutable caching for hashed assets.
+
+The build writes the bundle to `apps/web/dist` and mirrors it to `dist/` at the
+repo root (see `apps/web/scripts/mirror-dist.mjs`). Vercel resolves its output
+directory against whichever directory the project is rooted at - a setting that
+lives in the dashboard, not in this repo - so publishing both paths keeps the
+deploy working whether the project is rooted at the repo or at `apps/web`. Only
+the directory Vercel resolves is uploaded.
 
 Import the repo, then set three environment variables in Project Settings (or
 leave them unset for a local-mode demo with no accounts and no AI):
