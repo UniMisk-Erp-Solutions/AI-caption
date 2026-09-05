@@ -434,7 +434,9 @@ Verified against `test.mp4` (12.1s, 960×720, H.264/AAC):
 ## Deploying to Vercel
 
 `vercel.json` is set up for the monorepo: `pnpm build` at the root, output at
-`apps/web/dist`, SPA rewrites, and immutable caching for hashed assets.
+`dist/` in the repo root (Vite writes there from `apps/web`), SPA rewrites, and
+immutable caching for hashed assets. Leave the Root Directory blank and the
+Output Directory override off in Project Settings.
 
 Import the repo, then set three environment variables in Project Settings (or
 leave them unset for a local-mode demo with no accounts and no AI):
