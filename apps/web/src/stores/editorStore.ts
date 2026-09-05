@@ -21,6 +21,9 @@ import { create } from 'zustand';
 import { saveLocalState } from '../db/local';
 import { newId } from '../lib/id';
 
+/** How long a layer added at the playhead lasts when the scene is nearly over. */
+const NEW_LAYER_MIN_MS = 600;
+
 /**
  * The editor store.
  *
@@ -84,12 +87,19 @@ interface EditorStore {
   splitRunAtWord(layerId: string, runId: string, wordIndex: number): void;
   duplicateLayer(layerId: string): void;
   deleteLayer(layerId: string): void;
-  addLayer(sceneId: string): void;
+  /**
+   * Add an empty text layer to a scene. `atMs` places it at the playhead so a
+   * caption can be added between the existing ones; omitting it spans the whole
+   * scene, which is what the empty-state button has always done.
+   */
+  addLayer(sceneId: string, atMs?: number): void;
   replaceScene(scene: CaptionScene): void;
   replaceScenes(scenes: CaptionScene[]): void;
   setDirection(patch: Partial<ArtDirection>): void;
   regenerateWithPreset(presetId: string): void;
   updateWord(wordId: string, patch: Partial<TranscriptWord>): void;
+  insertWordAfter(wordId: string, text: string): void;
+  deleteWord(wordId: string): void;
 
   /* persistence */
   setSaveStatus(status: SaveStatus): void;
@@ -506,11 +516,23 @@ export const useEditorStore = create<EditorStore>((set, get) => {
       }
     },
 
-    addLayer(sceneId) {
+    addLayer(sceneId, atMs) {
       const { state } = get();
       if (!state) return;
       const scene = state.design.scenes.find((s) => s.id === sceneId);
       if (!scene) return;
+
+      // A new layer has to be on screen the moment it is created, or it cannot
+      // be clicked - selection only hits what is currently drawn.
+      let startMs = scene.startMs;
+      let endMs = scene.endMs;
+      if (atMs !== undefined) {
+        startMs = Math.min(Math.max(Math.round(atMs), scene.startMs), scene.endMs);
+        endMs = scene.endMs;
+        if (endMs - startMs < NEW_LAYER_MIN_MS) {
+          startMs = Math.max(scene.startMs, scene.endMs - NEW_LAYER_MIN_MS);
+        }
+      }
 
       const preset = getPreset(state.design.direction.preset);
       const voice = resolveVoice(preset, 'base', state.design.direction);
@@ -520,8 +542,8 @@ export const useEditorStore = create<EditorStore>((set, get) => {
         id: layerId,
         wordIds: [],
         role: 'tail',
-        startMs: scene.startMs,
-        endMs: scene.endMs,
+        startMs,
+        endMs,
         x: 0.5,
         y: 0.5,
         maxWidth: 0.8,
@@ -691,6 +713,151 @@ export const useEditorStore = create<EditorStore>((set, get) => {
         transcript: { ...state.transcript, words },
         design: { ...state.design, scenes },
       });
+    },
+
+    /**
+     * Add a word the transcription missed, without rebuilding anything.
+     *
+     * The alternative already in the app - retyping the whole transcript in the
+     * paste dialog - regenerates every scene and throws away hand-edited
+     * layers, which is far too destructive for "it heard one word wrong".
+     *
+     * The new word is spliced into the same scene, layer and run as the word it
+     * follows, so it appears on screen in the right place with the styling of
+     * its neighbours rather than as an orphan the renderer never draws.
+     */
+    insertWordAfter(wordId, text) {
+      const { state } = get();
+      if (!state) return;
+
+      const clean = text.trim().replace(/\s+/g, ' ');
+      if (!clean) return;
+
+      const index = state.transcript.words.findIndex((w) => w.id === wordId);
+      if (index < 0) return;
+
+      const anchor = state.transcript.words[index];
+      const next = state.transcript.words[index + 1];
+      const insertedId = newId('word');
+
+      // Prefer the silence after the word. When there is none, halve the word
+      // itself rather than overlap its neighbour - two words claiming the same
+      // milliseconds makes the caption flicker between them.
+      let anchorEnd = anchor.endMs;
+      let startMs = anchor.endMs;
+      let endMs = next ? next.startMs : Math.min(anchor.endMs + 500, state.project.durationMs);
+
+      if (endMs - startMs < 80) {
+        const mid = Math.round((anchor.startMs + anchor.endMs) / 2);
+        anchorEnd = mid;
+        startMs = mid;
+        endMs = anchor.endMs;
+      }
+
+      const words = [...state.transcript.words];
+      words[index] = { ...anchor, endMs: anchorEnd };
+      words.splice(index + 1, 0, {
+        id: insertedId,
+        text: clean,
+        startMs,
+        endMs: Math.max(startMs + 1, endMs),
+        // Typed by hand, so it is not an estimate - the panel dots estimates.
+        confidence: 1,
+      });
+
+      const after = <T,>(list: T[], at: number, value: T): T[] => [
+        ...list.slice(0, at + 1),
+        value,
+        ...list.slice(at + 1),
+      ];
+
+      const scenes = state.design.scenes.map((scene) => {
+        if (!scene.wordIds.includes(wordId)) return scene;
+        return {
+          ...scene,
+          wordIds: after(scene.wordIds, scene.wordIds.indexOf(wordId), insertedId),
+          layers: scene.layers.map((layer) => {
+            if (!layer.wordIds.includes(wordId)) return layer;
+            return {
+              ...layer,
+              wordIds: after(layer.wordIds, layer.wordIds.indexOf(wordId), insertedId),
+              runs: layer.runs.map((run) => {
+                const at = run.wordIds.indexOf(wordId);
+                if (at < 0) return run;
+                // Run text is positionally parallel to its wordIds, so the token
+                // goes in at the matching index. Clamped, because a hand-edited
+                // run can hold a different number of tokens than ids.
+                const parts = run.text.split(/\s+/).filter(Boolean);
+                parts.splice(Math.min(at + 1, parts.length), 0, clean);
+                return {
+                  ...run,
+                  text: parts.join(' '),
+                  wordIds: after(run.wordIds, at, insertedId),
+                };
+              }),
+            };
+          }),
+        };
+      });
+
+      commit({
+        ...state,
+        transcript: { ...state.transcript, words },
+        design: { ...state.design, scenes },
+      });
+    },
+
+    /** Remove a word the transcription invented, everywhere it appears. */
+    deleteWord(wordId) {
+      const { state, selection } = get();
+      if (!state) return;
+
+      const words = state.transcript.words.filter((w) => w.id !== wordId);
+      if (words.length === state.transcript.words.length) return;
+
+      const scenes = state.design.scenes.map((scene) => {
+        if (!scene.wordIds.includes(wordId)) return scene;
+        return {
+          ...scene,
+          wordIds: scene.wordIds.filter((id) => id !== wordId),
+          layers: scene.layers
+            .map((layer) => {
+              if (!layer.wordIds.includes(wordId)) return layer;
+              return {
+                ...layer,
+                wordIds: layer.wordIds.filter((id) => id !== wordId),
+                runs: layer.runs
+                  .map((run) => {
+                    const at = run.wordIds.indexOf(wordId);
+                    if (at < 0) return run;
+                    const parts = run.text.split(/\s+/).filter(Boolean);
+                    if (at < parts.length) parts.splice(at, 1);
+                    return {
+                      ...run,
+                      text: parts.join(' '),
+                      wordIds: run.wordIds.filter((id) => id !== wordId),
+                    };
+                  })
+                  // An emptied run would render as a hole in the line, and the
+                  // schema requires a layer to keep at least one.
+                  .filter((run) => run.text.trim().length > 0),
+              };
+            })
+            .filter((layer) => layer.runs.length > 0),
+        };
+      });
+
+      commit({
+        ...state,
+        transcript: { ...state.transcript, words },
+        design: { ...state.design, scenes },
+      });
+
+      // The selected layer may have just been emptied out of existence.
+      const stillThere = scenes.some((s) => s.layers.some((l) => l.id === selection.layerId));
+      if (selection.layerId && !stillThere) {
+        set({ selection: { ...selection, layerId: null, runId: null } });
+      }
     },
 
     setSaveStatus(status) {

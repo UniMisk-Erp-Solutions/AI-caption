@@ -593,6 +593,22 @@ function LayerActions({ layer }: { layer: CaptionLayer }) {
         </button>
       </div>
 
+      {/* Adding a layer used to live only in the "nothing selected" state, so it
+          disappeared the moment anything was selected - which is most of the
+          time, and made a second caption feel impossible to add. */}
+      <button
+        className="btn-outline mb-2 w-full"
+        onClick={() => {
+          const store = useEditorStore.getState();
+          const scene = store.state?.design.scenes.find(
+            (s) => store.timeMs >= s.startMs && store.timeMs <= s.endMs,
+          );
+          if (scene) store.addLayer(scene.id, store.timeMs);
+        }}
+      >
+        Add another text layer
+      </button>
+
       <div className="flex gap-2">
         <button className="btn-outline flex-1" onClick={() => duplicateLayer(layer.id)}>
           Duplicate

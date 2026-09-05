@@ -1,5 +1,5 @@
 import { estimateTimings, groupIntoScenes, getPreset, autoDesign } from '@kc/shared';
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { Modal } from '../../components/ui';
 import { cn } from '../../lib/cn';
 import { formatTime } from '../../lib/format';
@@ -23,8 +23,12 @@ export function TranscriptPanel() {
   const timeMs = useEditorStore((s) => s.timeMs);
   const setTime = useEditorStore((s) => s.setTime);
   const updateWord = useEditorStore((s) => s.updateWord);
+  const insertWordAfter = useEditorStore((s) => s.insertWordAfter);
+  const deleteWord = useEditorStore((s) => s.deleteWord);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The word this insertion field sits after, if one is open.
+  const [insertAfterId, setInsertAfterId] = useState<string | null>(null);
 
   const heroWordIds = useMemo(() => {
     const ids = new Set<string>();
@@ -102,7 +106,8 @@ export function TranscriptPanel() {
               }
 
               return (
-                <span key={word.id} className="group relative inline-flex">
+                <Fragment key={word.id}>
+                <span className="group relative inline-flex">
                   <button
                     onClick={() => setTime(word.startMs + 10)}
                     onDoubleClick={() => setEditingId(word.id)}
@@ -135,14 +140,54 @@ export function TranscriptPanel() {
                       ★
                     </button>
                   )}
+
+                  <button
+                    title="Delete this word"
+                    className="absolute -left-0.5 -top-1.5 hidden h-3.5 w-3.5 items-center justify-center rounded-full bg-ink-600 text-[8px] text-ink-100 group-hover:flex hover:bg-red-700"
+                    onClick={() => deleteWord(word.id)}
+                  >
+                    ×
+                  </button>
+
+                  <button
+                    title="Insert a word after this one"
+                    className="absolute -bottom-1.5 -right-0.5 hidden h-3.5 w-3.5 items-center justify-center rounded-full bg-ink-600 text-[8px] text-ink-100 group-hover:flex hover:bg-accent hover:text-ink-950"
+                    onClick={() => setInsertAfterId(word.id)}
+                  >
+                    +
+                  </button>
                 </span>
+
+                {/* Rendered in flow, right where the word will land, so
+                    "after this one" is literal rather than implied. */}
+                {insertAfterId === word.id && (
+                  <input
+                    autoFocus
+                    placeholder="new word"
+                    className="field w-24 px-1.5 py-0.5 text-xs"
+                    onBlur={(e) => {
+                      const text = e.target.value.trim();
+                      if (text) insertWordAfter(word.id, text);
+                      setInsertAfterId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur();
+                      if (e.key === 'Escape') {
+                        e.currentTarget.value = '';
+                        e.currentTarget.blur();
+                      }
+                    }}
+                  />
+                )}
+                </Fragment>
               );
             })}
           </div>
 
           <p className="mt-4 text-[10px] leading-relaxed text-ink-600">
-            Click a word to jump to it. Double-click to fix it. Hover and press ★
-            to make it the hero of its scene. Dotted words have estimated timings.
+            Click a word to jump to it. Double-click to fix it. Hover for ★ to
+            make it the hero of its scene, + to add a missing word after it, or ×
+            to remove it. Dotted words have estimated timings.
           </p>
         </div>
       )}
