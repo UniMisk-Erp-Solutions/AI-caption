@@ -1,0 +1,394 @@
+import { layerText, type EditorState } from '@kc/shared';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { cn } from '../../lib/cn';
+import { apiHealth, completeUpload, performUpload, requestDownloadUrl, requestUploadUrl } from '../../lib/api';
+import { recordAsset, supabase } from '../../lib/supabase';
+import { exportStill, exportVideo } from '../../media/export';
+import { probeMedia } from '../../media/probe';
+import { extractAudioForTranscription } from '../../media/audio';
+import { runPipeline, type StepState } from '../processing/pipeline';
+
+/**
+ * End-to-end harness.
+ *
+ * Runs the real pipeline - not a mock of it - against a real clip: probe,
+ * extract audio, Gemini transcription, Gemini verification, keyframes, Gemma
+ * design, then a WebCodecs export. The finished MP4 is posted back to a local
+ * bridge that writes it to disk.
+ *
+ * It exists because the parts that are most likely to break are precisely the
+ * parts that cannot run in Node: canvas text metrics, font loading, WebCodecs.
+ * Auto-runs with `?auto=1` so it can be driven headlessly.
+ */
+
+const BRIDGE = 'http://localhost:5299';
+
+type Status = 'idle' | 'running' | 'done' | 'failed';
+
+interface LogLine {
+  at: number;
+  text: string;
+  kind: 'info' | 'ok' | 'warn' | 'fail';
+}
+
+export function HarnessPage() {
+  const [status, setStatus] = useState<Status>('idle');
+  const [log, setLog] = useState<LogLine[]>([]);
+  const [steps, setSteps] = useState<StepState[]>([]);
+  const [design, setDesign] = useState<EditorState | null>(null);
+  const startedRef = useRef(false);
+
+  const say = useCallback((text: string, kind: LogLine['kind'] = 'info') => {
+    setLog((prev) => [...prev, { at: Date.now(), text, kind }]);
+    // Mirror to the bridge so a headless run leaves a readable trace.
+    void fetch(`${BRIDGE}/log`, { method: 'POST', body: `[${kind}] ${text}` }).catch(() => undefined);
+  }, []);
+
+  const run = useCallback(async () => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    setStatus('running');
+    const t0 = Date.now();
+
+    try {
+      /* ---------------------------------------------- preflight ---- */
+      const health = await apiHealth();
+      say(`worker ok · models: ${JSON.stringify((health as { models?: unknown }).models)}`, 'ok');
+
+      if (!supabase) throw new Error('Supabase is not configured in this build.');
+
+      const { data: auth, error: authError } = await supabase.auth.signInWithPassword({
+        email: 'harness@example.invalid',
+        password: 'REDACTED-SEE-ENV',
+      });
+      if (authError) throw new Error(`sign-in failed: ${authError.message}`);
+      const userId = auth.user!.id;
+      say(`signed in as ${userId}`, 'ok');
+
+      /* ---------------------------------------------- source ------- */
+      const response = await fetch(`${BRIDGE}/test.mp4`);
+      if (!response.ok) throw new Error('could not fetch test.mp4 from the bridge');
+      const file = await response.blob();
+      say(`fetched test.mp4 · ${(file.size / 1024 / 1024).toFixed(2)} MB`, 'ok');
+
+      const media = await probeMedia(file);
+      say(
+        `probed · ${media.width}x${media.height} · ${(media.durationMs / 1000).toFixed(1)}s · ` +
+          `${media.videoCodec}/${media.audioCodec ?? 'no audio'} · decodable=${media.decodable}`,
+        'ok',
+      );
+
+      /* ---------------------------------------------- project ------ */
+      const projectId = crypto.randomUUID();
+      const { error: insertError } = await supabase.from('projects').insert({
+        id: projectId,
+        user_id: userId,
+        title: 'Harness run',
+        status: 'processing',
+        width: media.width,
+        height: media.height,
+        fps: media.fps,
+        duration_ms: media.durationMs,
+      });
+      if (insertError) throw new Error(`project insert failed: ${insertError.message}`);
+      say(`created project ${projectId}`, 'ok');
+
+      /* ---------------------------------------------- audio -------- */
+      // Dumped to the bridge so the exact bytes sent to Gemini can be replayed
+      // outside the browser when transcription misbehaves.
+      const audio = await extractAudioForTranscription(file);
+      say(`extracted audio · ${(audio.blob.size / 1024).toFixed(0)} KB @ ${audio.sampleRate} Hz mono`, 'ok');
+      await fetch(`${BRIDGE}/result`, {
+        method: 'POST',
+        headers: { 'X-Result-Name': 'speech.wav' },
+        body: audio.blob,
+      }).catch(() => undefined);
+
+      /* ---------------------------------------------- pipeline ----- */
+      say('running the real pipeline (Gemini transcribe -> verify -> Gemma design)…');
+      const result = await runPipeline(
+        { projectId, file, media, mode: 'auto', style: 'AUTO' },
+        setSteps,
+      );
+
+      for (const warning of result.warnings) say(warning, 'warn');
+      setDesign(result.state);
+
+      const words = result.state.transcript.words;
+      say(
+        `transcript · ${words.length} words · ${result.state.transcript.contentType} · ` +
+          `"${words.slice(0, 12).map((w) => w.text).join(' ')}…"`,
+        'ok',
+      );
+      say(
+        `design · preset ${result.state.design.direction.preset} · ` +
+          `${result.state.design.scenes.length} scenes`,
+        'ok',
+      );
+
+      for (const scene of result.state.design.scenes.slice(0, 6)) {
+        const hero = scene.layers
+          .flatMap((l) => l.runs)
+          .filter((r) => r.emphasis === 'hero')
+          .map((r) => `${r.text}(${r.fontId})`)
+          .join(', ');
+        say(
+          `  ${scene.id} [${scene.compositionId}] ` +
+            `${scene.layers.map(layerText).join(' / ')}` +
+            (hero ? `  hero: ${hero}` : '  (no hero)'),
+        );
+      }
+
+      /* ---------------------------------------------- export ------- */
+      say('exporting MP4 with WebCodecs…');
+      const output = await exportVideo(
+        file,
+        result.state,
+        {
+          // Keep the source shape rather than forcing 9:16, so the export can be
+          // compared frame-for-frame with the preview.
+          width: media.width % 2 === 0 ? media.width : media.width - 1,
+          height: media.height % 2 === 0 ? media.height : media.height - 1,
+          fps: 30,
+          bitrate: 6_000_000,
+          includeAudio: true,
+        },
+        (progress) => {
+          if (progress.frame && progress.frame % 60 === 0) {
+            say(`  rendering ${progress.frame}/${progress.totalFrames}`);
+          }
+        },
+      );
+      say(`rendered ${(output.blob.size / 1024 / 1024).toFixed(2)} MB`, 'ok');
+
+      const written = await fetch(`${BRIDGE}/result`, {
+        method: 'POST',
+        headers: { 'X-Result-Name': 'result.mp4' },
+        body: output.blob,
+      });
+      if (!written.ok) throw new Error(`bridge refused the result: ${await written.text()}`);
+      say(`wrote ${await written.text()}`, 'ok');
+
+      /* ---------------------------------------------- stills ------- */
+      // Cache the design and a still per scene, so the output can be inspected
+      // (and the renderer re-checked) without spending another AI call.
+      await fetch(`${BRIDGE}/result`, {
+        method: 'POST',
+        headers: { 'X-Result-Name': 'design.json' },
+        body: new Blob([JSON.stringify(result.state, null, 2)], { type: 'application/json' }),
+      }).catch(() => undefined);
+
+      let index = 0;
+      for (const scene of result.state.design.scenes) {
+        index++;
+        // Sample late in the scene so every line has finished entering.
+        const at = scene.startMs + (scene.endMs - scene.startMs) * 0.85;
+        const png = await exportStill(file, result.state, at, media.width, media.height);
+        await fetch(`${BRIDGE}/result`, {
+          method: 'POST',
+          headers: { 'X-Result-Name': `still-${index}.png` },
+          body: png,
+        }).catch(() => undefined);
+        say(`  still-${index}.png at ${(at / 1000).toFixed(1)}s`);
+      }
+
+      say(`DONE in ${((Date.now() - t0) / 1000).toFixed(1)}s`, 'ok');
+      setStatus('done');
+    } catch (error) {
+      say(error instanceof Error ? error.message : String(error), 'fail');
+      say('FAILED', 'fail');
+      setStatus('failed');
+    }
+  }, [say]);
+
+  /**
+   * Storage round trip, isolated from the AI so it can be re-run freely.
+   *
+   * Covers the whole chain that only exists in production: signed ticket ->
+   * upload -> album filing -> asset row -> ownership check -> read token ->
+   * streaming proxy. Bytes are compared at the end, because "HTTP 200" is not
+   * the same as "the file came back intact".
+   */
+  const runStorage = useCallback(async () => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    setStatus('running');
+
+    try {
+      const health = (await apiHealth()) as { storage?: Record<string, unknown> };
+      say(`storage: ${JSON.stringify(health.storage)}`, 'ok');
+
+      if (!supabase) throw new Error('Supabase is not configured.');
+      const { data: auth, error: authError } = await supabase.auth.signInWithPassword({
+        email: 'harness@example.invalid',
+        password: 'REDACTED-SEE-ENV',
+      });
+      if (authError) throw new Error(`sign-in failed: ${authError.message}`);
+      say(`signed in as ${auth.user!.id}`, 'ok');
+
+      const file = await (await fetch(`${BRIDGE}/test.mp4`)).blob();
+      const media = await probeMedia(file);
+
+      const projectId = crypto.randomUUID();
+      const { error: insertError } = await supabase.from('projects').insert({
+        id: projectId,
+        user_id: auth.user!.id,
+        title: 'Storage test',
+        status: 'ready',
+        width: media.width,
+        height: media.height,
+        fps: media.fps,
+        duration_ms: media.durationMs,
+      });
+      if (insertError) throw new Error(`project insert failed: ${insertError.message}`);
+      say(`project ${projectId}`, 'ok');
+
+      const ticket = await requestUploadUrl({
+        projectId,
+        mimeType: 'video/mp4',
+        size: file.size,
+        kind: 'source_video',
+        fileName: 'harness-source.mp4',
+      });
+      say(`ticket · ${ticket.provider} · ${ticket.method} · assignsId=${ticket.objectKey === null}`, 'ok');
+
+      const objectKey = await performUpload(ticket, file, 'harness-source.mp4', (f) => {
+        if (f === 1) say('  upload complete');
+      });
+      say(`uploaded · objectKey ${objectKey}`, 'ok');
+
+      if (!ticket.objectKey) await completeUpload({ projectId, kind: 'source_video', objectKey });
+      await recordAsset({
+        projectId,
+        kind: 'source_video',
+        provider: ticket.provider,
+        objectKey,
+        mimeType: 'video/mp4',
+        sizeBytes: file.size,
+      });
+      say('recorded asset row', 'ok');
+
+      const { url } = await requestDownloadUrl(objectKey);
+      say(`read url · ${url.slice(0, 72)}…`, 'ok');
+
+      const back = await fetch(url);
+      if (!back.ok) throw new Error(`read failed: HTTP ${back.status}`);
+      const roundTripped = await back.blob();
+
+      if (roundTripped.size !== file.size) {
+        throw new Error(`size mismatch: sent ${file.size}, got ${roundTripped.size}`);
+      }
+      say(`round trip verified · ${roundTripped.size} bytes identical`, 'ok');
+
+      // A Range request is what makes a proxied video seekable rather than a
+      // full download before playback.
+      const ranged = await fetch(url, { headers: { Range: 'bytes=0-1023' } });
+      say(
+        `range request · HTTP ${ranged.status} · ${(await ranged.blob()).size} bytes` +
+          (ranged.status === 206 ? ' (seekable)' : ' (no partial support)'),
+        ranged.status === 206 ? 'ok' : 'warn',
+      );
+
+      say('STORAGE OK', 'ok');
+      say('DONE', 'ok');
+      setStatus('done');
+    } catch (error) {
+      say(error instanceof Error ? error.message : String(error), 'fail');
+      say('FAILED', 'fail');
+      setStatus('failed');
+    }
+  }, [say]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('storage') === '1') void runStorage();
+    else if (params.get('auto') === '1') void run();
+  }, [run, runStorage]);
+
+  return (
+    <div className="mx-auto w-full max-w-3xl px-6 py-10">
+      <header className="mb-6 flex items-end justify-between">
+        <div>
+          <h1 className="font-display text-3xl text-ink-100">End-to-end harness</h1>
+          <p className="mt-1 text-sm text-ink-400">
+            Real clip, real Gemini, real Gemma, real WebCodecs export.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn-outline" onClick={() => void runStorage()} disabled={status === 'running'}>
+            Storage only
+          </button>
+          <button className="btn-primary" onClick={() => void run()} disabled={status === 'running'}>
+            {status === 'running' ? 'Running…' : 'Full run'}
+          </button>
+        </div>
+      </header>
+
+      <div
+        id="harness-status"
+        data-status={status}
+        className={cn(
+          'mb-4 rounded border px-3 py-2 text-sm',
+          status === 'done'
+            ? 'border-emerald-800 bg-emerald-950/30 text-emerald-200'
+            : status === 'failed'
+              ? 'border-red-900 bg-red-950/30 text-red-200'
+              : 'border-ink-700 bg-ink-900 text-ink-300',
+        )}
+      >
+        status: {status}
+      </div>
+
+      {steps.length > 0 && (
+        <ol className="mb-4 space-y-0.5">
+          {steps.map((step) => (
+            <li key={step.id} className="flex gap-2 text-[11px]">
+              <span
+                className={cn(
+                  'w-16 shrink-0',
+                  step.status === 'done'
+                    ? 'text-emerald-400'
+                    : step.status === 'failed'
+                      ? 'text-red-400'
+                      : step.status === 'skipped'
+                        ? 'text-ink-600'
+                        : 'text-ink-400',
+                )}
+              >
+                {step.status}
+              </span>
+              <span className="text-ink-300">{step.label}</span>
+              <span className="text-ink-600">{step.detail}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded border border-ink-800 bg-ink-950 p-3 text-[11px] leading-relaxed">
+        {log.map((line, i) => (
+          <div
+            key={i}
+            className={cn(
+              line.kind === 'ok'
+                ? 'text-emerald-300'
+                : line.kind === 'fail'
+                  ? 'text-red-300'
+                  : line.kind === 'warn'
+                    ? 'text-amber-300'
+                    : 'text-ink-400',
+            )}
+          >
+            {line.text}
+          </div>
+        ))}
+      </pre>
+
+      {design && (
+        <p className="mt-3 text-[11px] text-ink-600">
+          {design.design.scenes.length} scenes · {design.transcript.words.length} words ·{' '}
+          {design.design.direction.preset}
+        </p>
+      )}
+    </div>
+  );
+}

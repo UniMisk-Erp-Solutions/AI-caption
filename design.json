@@ -1,0 +1,652 @@
+{
+  "version": 1,
+  "project": {
+    "width": 960,
+    "height": 720,
+    "fps": 24,
+    "durationMs": 12096
+  },
+  "transcript": {
+    "language": "en",
+    "contentType": "song",
+    "words": [
+      {
+        "id": "w1",
+        "text": "We",
+        "startMs": 1500,
+        "endMs": 1700,
+        "confidence": 0.9
+      },
+      {
+        "id": "w2",
+        "text": "were",
+        "startMs": 1700,
+        "endMs": 1900,
+        "confidence": 0.9
+      },
+      {
+        "id": "w3",
+        "text": "too",
+        "startMs": 1900,
+        "endMs": 2100,
+        "confidence": 0.9
+      },
+      {
+        "id": "w4",
+        "text": "close",
+        "startMs": 2100,
+        "endMs": 2500,
+        "confidence": 0.9
+      },
+      {
+        "id": "w5",
+        "text": "to",
+        "startMs": 2500,
+        "endMs": 2700,
+        "confidence": 0.9
+      },
+      {
+        "id": "w6",
+        "text": "the",
+        "startMs": 2700,
+        "endMs": 2900,
+        "confidence": 0.9
+      },
+      {
+        "id": "w7",
+        "text": "stars",
+        "startMs": 2900,
+        "endMs": 3500,
+        "confidence": 0.9
+      },
+      {
+        "id": "w8",
+        "text": "I",
+        "startMs": 4000,
+        "endMs": 4200,
+        "confidence": 0.9
+      },
+      {
+        "id": "w9",
+        "text": "never",
+        "startMs": 4200,
+        "endMs": 4500,
+        "confidence": 0.9
+      },
+      {
+        "id": "w10",
+        "text": "knew",
+        "startMs": 4500,
+        "endMs": 4800,
+        "confidence": 0.9
+      },
+      {
+        "id": "w11",
+        "text": "somebody",
+        "startMs": 4800,
+        "endMs": 5400,
+        "confidence": 0.9
+      },
+      {
+        "id": "w12",
+        "text": "like",
+        "startMs": 5400,
+        "endMs": 5700,
+        "confidence": 0.9
+      },
+      {
+        "id": "w13",
+        "text": "you",
+        "startMs": 5700,
+        "endMs": 6200,
+        "confidence": 0.9
+      },
+      {
+        "id": "w14",
+        "text": "somebody",
+        "startMs": 6200,
+        "endMs": 7000,
+        "confidence": 0.9
+      },
+      {
+        "id": "w15",
+        "text": "falling",
+        "startMs": 7000,
+        "endMs": 7800,
+        "confidence": 0.9
+      },
+      {
+        "id": "w16",
+        "text": "just",
+        "startMs": 7800,
+        "endMs": 8500,
+        "confidence": 0.9
+      }
+    ]
+  },
+  "design": {
+    "direction": {
+      "preset": "OLD_MONEY",
+      "baseFont": null,
+      "heroFont": null,
+      "accentFont": null,
+      "palette": [
+        "#F7F3EC",
+        "#DED5C6",
+        "#B08D57"
+      ],
+      "motionLevel": 0.3,
+      "rotationLevel": 0.1,
+      "scale": 1,
+      "heroContrast": 1.2,
+      "note": "A sophisticated, melancholic royal aesthetic using high-contrast serifs and flowing script accents."
+    },
+    "scenes": [
+      {
+        "id": "sc1",
+        "startMs": 1500,
+        "endMs": 3500,
+        "wordIds": [
+          "w1",
+          "w2",
+          "w3",
+          "w4",
+          "w5",
+          "w6",
+          "w7"
+        ],
+        "keyframeTimestampMs": 2500,
+        "compositionId": "cascade-left",
+        "avoidRegions": [
+          {
+            "x": 0.35,
+            "y": 0.1,
+            "width": 0.3,
+            "height": 0.4,
+            "kind": "face"
+          },
+          {
+            "x": 0.2,
+            "y": 0,
+            "width": 0.6,
+            "height": 0.8,
+            "kind": "subject"
+          }
+        ],
+        "backdropLuma": 0.34306679071629376,
+        "layers": [
+          {
+            "id": "sc1-l1",
+            "wordIds": [
+              "w1",
+              "w2"
+            ],
+            "role": "lead",
+            "startMs": 1500,
+            "endMs": 3500,
+            "x": 0.12,
+            "y": 0.7946683,
+            "maxWidth": 0.825,
+            "rotation": 0,
+            "fontSize": 0.039200000000000006,
+            "lineHeight": 0.88,
+            "textAlign": "left",
+            "opacity": 1,
+            "shadow": 0.45,
+            "background": null,
+            "enterAnimation": "fade",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 294,
+            "zIndex": 2,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc1-l1-r1",
+                "text": "We Were",
+                "wordIds": [
+                  "w1",
+                  "w2"
+                ],
+                "emphasis": "base",
+                "fontId": "dmSerifDisplay",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 1,
+                "letterSpacing": -0.03,
+                "baselineShift": 0,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.03,
+                "breakBefore": false
+              }
+            ]
+          },
+          {
+            "id": "sc1-l2",
+            "wordIds": [
+              "w3",
+              "w4",
+              "w5"
+            ],
+            "role": "tail",
+            "startMs": 1780,
+            "endMs": 3500,
+            "x": 0.31,
+            "y": 0.83408684,
+            "maxWidth": 0.635,
+            "rotation": 0,
+            "fontSize": 0.042140000000000004,
+            "lineHeight": 0.88,
+            "textAlign": "left",
+            "opacity": 1,
+            "shadow": 0.45,
+            "background": null,
+            "enterAnimation": "fade-up",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 294,
+            "zIndex": 2,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc1-l2-r1",
+                "text": "Too Close to",
+                "wordIds": [
+                  "w3",
+                  "w4",
+                  "w5"
+                ],
+                "emphasis": "base",
+                "fontId": "dmSerifDisplay",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 1,
+                "letterSpacing": -0.03,
+                "baselineShift": 0,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.03,
+                "breakBefore": false
+              }
+            ]
+          },
+          {
+            "id": "sc1-l3",
+            "wordIds": [
+              "w6",
+              "w7"
+            ],
+            "role": "hero",
+            "startMs": 2580,
+            "endMs": 3500,
+            "x": 0.2,
+            "y": 0.9300357,
+            "maxWidth": 0.7449999999999999,
+            "rotation": 0,
+            "fontSize": 0.049,
+            "lineHeight": 0.88,
+            "textAlign": "left",
+            "opacity": 1,
+            "shadow": 0.45,
+            "background": null,
+            "enterAnimation": "fade-up",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 276,
+            "zIndex": 3,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc1-l3-r1",
+                "text": "The",
+                "wordIds": [
+                  "w6"
+                ],
+                "emphasis": "base",
+                "fontId": "dmSerifDisplay",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 1,
+                "letterSpacing": -0.03,
+                "baselineShift": 0,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.03,
+                "breakBefore": false
+              },
+              {
+                "id": "sc1-l3-r2",
+                "text": "Stars",
+                "wordIds": [
+                  "w7"
+                ],
+                "emphasis": "hero",
+                "fontId": "styleScript",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 2.4,
+                "letterSpacing": 0,
+                "baselineShift": 0.1,
+                "color": "#F7F3EC",
+                "tuckBefore": -0.14,
+                "tuckAfter": -0.14,
+                "breakBefore": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "sc2",
+        "startMs": 4000,
+        "endMs": 7000,
+        "wordIds": [
+          "w8",
+          "w9",
+          "w10",
+          "w11",
+          "w12",
+          "w13",
+          "w14"
+        ],
+        "keyframeTimestampMs": 5500,
+        "compositionId": "split-drift",
+        "avoidRegions": [
+          {
+            "x": 0.4,
+            "y": 0.1,
+            "width": 0.2,
+            "height": 0.3,
+            "kind": "face"
+          },
+          {
+            "x": 0.3,
+            "y": 0.1,
+            "width": 0.4,
+            "height": 0.8,
+            "kind": "subject"
+          }
+        ],
+        "backdropLuma": 0.24855968562423922,
+        "layers": [
+          {
+            "id": "sc2-l1",
+            "wordIds": [
+              "w8",
+              "w9",
+              "w10"
+            ],
+            "role": "hero",
+            "startMs": 4000,
+            "endMs": 7000,
+            "x": 0.5,
+            "y": 0.56610842,
+            "maxWidth": 0.945,
+            "rotation": 0,
+            "fontSize": 0.049,
+            "lineHeight": 0.88,
+            "textAlign": "center",
+            "opacity": 1,
+            "shadow": 0.45,
+            "background": null,
+            "enterAnimation": "fade-up",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 294,
+            "zIndex": 3,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc2-l1-r1",
+                "text": "I Never",
+                "wordIds": [
+                  "w8",
+                  "w9"
+                ],
+                "emphasis": "base",
+                "fontId": "dmSerifDisplay",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 1,
+                "letterSpacing": -0.03,
+                "baselineShift": 0,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.03,
+                "breakBefore": false
+              },
+              {
+                "id": "sc2-l1-r2",
+                "text": "Knew",
+                "wordIds": [
+                  "w10"
+                ],
+                "emphasis": "hero",
+                "fontId": "styleScript",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 2.4,
+                "letterSpacing": 0,
+                "baselineShift": 0.1,
+                "color": "#F7F3EC",
+                "tuckBefore": -0.14,
+                "tuckAfter": -0.14,
+                "breakBefore": false
+              }
+            ]
+          },
+          {
+            "id": "sc2-l2",
+            "wordIds": [
+              "w11",
+              "w12",
+              "w13"
+            ],
+            "role": "tail",
+            "startMs": 4680,
+            "endMs": 7000,
+            "x": 0.14,
+            "y": 0.61828166,
+            "maxWidth": 0.8049999999999999,
+            "rotation": 0,
+            "fontSize": 0.03724,
+            "lineHeight": 0.88,
+            "textAlign": "left",
+            "opacity": 1,
+            "shadow": 0.45,
+            "background": null,
+            "enterAnimation": "fade",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 294,
+            "zIndex": 2,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc2-l2-r1",
+                "text": "Somebody Like You",
+                "wordIds": [
+                  "w11",
+                  "w12",
+                  "w13"
+                ],
+                "emphasis": "base",
+                "fontId": "dmSerifDisplay",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 1,
+                "letterSpacing": -0.03,
+                "baselineShift": 0,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.03,
+                "breakBefore": false
+              }
+            ]
+          },
+          {
+            "id": "sc2-l3",
+            "wordIds": [
+              "w14"
+            ],
+            "role": "tail",
+            "startMs": 6080,
+            "endMs": 7000,
+            "x": 0.86,
+            "y": 0.65656438,
+            "maxWidth": 0.8049999999999999,
+            "rotation": 0,
+            "fontSize": 0.04116,
+            "lineHeight": 0.88,
+            "textAlign": "right",
+            "opacity": 1,
+            "shadow": 0.45,
+            "background": null,
+            "enterAnimation": "fade-up",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 276,
+            "zIndex": 2,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc2-l3-r1",
+                "text": "Somebody",
+                "wordIds": [
+                  "w14"
+                ],
+                "emphasis": "base",
+                "fontId": "dmSerifDisplay",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 1,
+                "letterSpacing": -0.03,
+                "baselineShift": 0,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.03,
+                "breakBefore": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "sc3",
+        "startMs": 7000,
+        "endMs": 8500,
+        "wordIds": [
+          "w15",
+          "w16"
+        ],
+        "keyframeTimestampMs": 7750,
+        "compositionId": "anchor-bottom",
+        "avoidRegions": [
+          {
+            "x": 0.1,
+            "y": 0.2,
+            "width": 0.6,
+            "height": 0.7,
+            "kind": "subject"
+          }
+        ],
+        "backdropLuma": 0.25927250033347193,
+        "layers": [
+          {
+            "id": "sc3-l1",
+            "wordIds": [
+              "w15"
+            ],
+            "role": "hero",
+            "startMs": 7000,
+            "endMs": 8500,
+            "x": 0.1,
+            "y": 0.8747391999999999,
+            "maxWidth": 0.845,
+            "rotation": 0,
+            "fontSize": 0.049,
+            "lineHeight": 0.88,
+            "textAlign": "left",
+            "opacity": 1,
+            "shadow": 0.8,
+            "background": null,
+            "enterAnimation": "fade-up",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 294,
+            "zIndex": 3,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc3-l1-r1",
+                "text": "Falling",
+                "wordIds": [
+                  "w15"
+                ],
+                "emphasis": "hero",
+                "fontId": "styleScript",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 2.4,
+                "letterSpacing": 0,
+                "baselineShift": 0.1,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.14,
+                "breakBefore": false
+              }
+            ]
+          },
+          {
+            "id": "sc3-l2",
+            "wordIds": [
+              "w16"
+            ],
+            "role": "tail",
+            "startMs": 7680,
+            "endMs": 8500,
+            "x": 0.1,
+            "y": 0.9283648,
+            "maxWidth": 0.845,
+            "rotation": 0,
+            "fontSize": 0.039200000000000006,
+            "lineHeight": 0.88,
+            "textAlign": "left",
+            "opacity": 1,
+            "shadow": 0.8,
+            "background": null,
+            "enterAnimation": "fade",
+            "exitAnimation": "fade",
+            "enterDurationMs": 378,
+            "exitDurationMs": 246,
+            "zIndex": 2,
+            "locked": false,
+            "runs": [
+              {
+                "id": "sc3-l2-r1",
+                "text": "Just",
+                "wordIds": [
+                  "w16"
+                ],
+                "emphasis": "base",
+                "fontId": "dmSerifDisplay",
+                "fontWeight": 400,
+                "italic": false,
+                "sizeScale": 1,
+                "letterSpacing": -0.03,
+                "baselineShift": 0,
+                "color": "#F7F3EC",
+                "tuckBefore": 0,
+                "tuckAfter": -0.03,
+                "breakBefore": false
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "revision": 1,
+  "updatedAt": 1788606422969
+}

@@ -12,11 +12,41 @@ export interface Env {
 
   /** Supabase project URL, used to fetch the JWKS for token verification. */
   SUPABASE_URL: string;
+  /**
+   * Supabase anon key. Required as PostgREST's `apikey` header - a user access
+   * token is not accepted there. Authorization still carries the user's JWT, so
+   * RLS remains in force and this grants no extra privilege.
+   */
+  SUPABASE_ANON_KEY: string;
 
+  /** 'r2' | 'immich'. Omit to infer from whichever credentials are present. */
+  STORAGE_PROVIDER?: string;
+
+  /* ---- Cloudflare R2 ---- */
   R2_ACCOUNT_ID: string;
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
   R2_BUCKET_NAME: string;
+
+  /* ---- Self-hosted Immich ---- */
+  /** Base URL, e.g. https://immich.example.com */
+  IMMICH_URL?: string;
+  /**
+   * Full-scope key. Server-side only - it can read the whole library, so it
+   * must never be sent to a browser.
+   */
+  IMMICH_API_KEY?: string;
+  /**
+   * Optional key scoped to `asset.upload` ONLY. When set, the browser uploads
+   * straight to Immich and skips the Worker's 100 MB body limit. Safe to expose
+   * precisely because it cannot read anything.
+   */
+  IMMICH_UPLOAD_KEY?: string;
+  /** Album name prefix; one album is created per user. */
+  IMMICH_ALBUM_PREFIX?: string;
+
+  /** HMAC secret for short-lived read tokens. Required in production. */
+  STORAGE_TOKEN_SECRET?: string;
 
   /** Comma-separated list of origins allowed to call this Worker. */
   ALLOWED_ORIGIN: string;

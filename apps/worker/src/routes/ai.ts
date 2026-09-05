@@ -17,7 +17,7 @@ import {
   type PromptPart,
 } from '@kc/shared/server';
 import { assertProjectOwnership, requireUser } from '../auth/jwt';
-import { extractJson, generate, resolveModel, type Part } from '../gemini/client';
+import { extractJson, generate, generateWithFallback, resolveModelChain, type Part } from '../gemini/client';
 import { enforceUsage, HttpError, json, type Env } from '../lib/env';
 
 /**
@@ -126,20 +126,32 @@ export async function handleTranscribe(request: Request, env: Env, headers: Head
   await enforceUsage(env, user.id, 'transcription', AI_LIMITS.transcriptionsPerDay);
 
   const audio = await readAudio(form);
-  const model = await resolveModel(env, 'transcribe');
 
-  const raw = await generate(env, {
-    model,
-    system: TRANSCRIBE_SYSTEM_PROMPT,
-    parts: [
-      { inlineData: { mimeType: audio.mimeType, data: audio.data } },
-      { text: 'Transcribe this audio verbatim with word-level millisecond timestamps.' },
-    ],
-    // Transcription is a transcription, not a creative act.
-    temperature: 0,
-    jsonMode: true,
-    maxOutputTokens: 16384,
-  });
+  const { text: raw, model } = await generateWithFallback(
+    env,
+    'transcribe',
+    {
+      system: TRANSCRIBE_SYSTEM_PROMPT,
+      parts: [
+        { inlineData: { mimeType: audio.mimeType, data: audio.data } },
+        { text: 'Transcribe this audio verbatim with word-level millisecond timestamps.' },
+      ],
+      // Transcription is a transcription, not a creative act.
+      temperature: 0,
+      jsonMode: true,
+      maxOutputTokens: 16384,
+    },
+    // "Usable" means it actually contains words, not merely that the HTTP call
+    // succeeded - a model can return an empty body and still report success.
+    (text) => {
+      try {
+        const candidate = transcriptionResultSchema.safeParse(extractJson(text));
+        return candidate.success && candidate.data.words.length > 0;
+      } catch {
+        return false;
+      }
+    },
+  );
 
   const parsed = transcriptionResultSchema.safeParse(extractJson(raw));
   if (!parsed.success) {
@@ -183,10 +195,7 @@ export async function handleAnalyzeAudio(request: Request, env: Env, headers: He
   const timedText = String(form.get('timedText') ?? '');
   const userLyrics = form.get('userLyrics') ? String(form.get('userLyrics')) : undefined;
 
-  const model = await resolveModel(env, 'analyze');
-
-  const raw = await generate(env, {
-    model,
+  const { text: raw, model } = await generateWithFallback(env, 'analyze', {
     parts: [
       { inlineData: { mimeType: audio.mimeType, data: audio.data } },
       { text: buildAnalysisPrompt({ mode, timedText, userLyrics }) },
@@ -219,7 +228,7 @@ export async function handleDesign(request: Request, env: Env, headers: HeadersI
     throw new HttpError(400, 'Too many scenes in one request.', 'too_many_scenes');
   }
 
-  const model = await resolveModel(env, 'design');
+  const [model] = await resolveModelChain(env, 'design');
   const parts = toGeminiParts(buildDesignPrompt(input));
 
   const design = await validated(
@@ -245,7 +254,7 @@ export async function handleRedesignScene(request: Request, env: Env, headers: H
   await assertProjectOwnership(env, request, input.projectId);
   await enforceUsage(env, user.id, 'scene_regeneration', AI_LIMITS.regenerationsPerProject);
 
-  const model = await resolveModel(env, 'design');
+  const [model] = await resolveModelChain(env, 'design');
   const parts = toGeminiParts(buildRedesignPrompt(input));
 
   const result = await validated(

@@ -102,7 +102,7 @@ export function UploadPage() {
       // The upload runs alongside the AI work rather than blocking it - the
       // pipeline reads the local blob, so there is no reason to wait.
       const uploading = hasApi
-        ? uploadSource(projectId, file, setUploadFraction).catch(() => null)
+        ? uploadSource(projectId, file, file.name, setUploadFraction).catch(() => null)
         : Promise.resolve(null);
 
       const result = await runPipeline(

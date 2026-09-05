@@ -41,7 +41,7 @@ Three optional services, each independently useful.
 | --- | --- | --- |
 | Supabase | Accounts, projects synced across devices | Free tier |
 | Cloudflare Worker | Gemini transcription + Gemma design | Free tier |
-| Cloudflare R2 | Source videos and exports in the cloud | Free tier (10 GB) |
+| Storage | Source videos and exports | **Cloudflare R2** (10 GB free) or **self-hosted Immich** |
 
 ### 1. Supabase
 
@@ -53,6 +53,9 @@ It creates the tables, the RLS policies and the free-tier guards.
 VITE_SUPABASE_URL=https://xxxx.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJ...
 ```
+
+Run `0002_immich_storage.sql` too — it adds the unique index the asset upsert
+needs, which is also what proves ownership of an Immich asset.
 
 ### 2. Worker (AI + storage)
 
@@ -75,20 +78,58 @@ Deploying:
 wrangler kv namespace create USAGE   # then paste the id into wrangler.toml
 wrangler secret put GEMINI_API_KEY
 wrangler secret put SUPABASE_URL
-wrangler secret put R2_ACCOUNT_ID
-wrangler secret put R2_ACCESS_KEY_ID
-wrangler secret put R2_SECRET_ACCESS_KEY
+wrangler secret put SUPABASE_ANON_KEY   # PostgREST rejects a user token here
+wrangler secret put STORAGE_TOKEN_SECRET
+# then either the R2 secrets or the Immich ones (see below)
 wrangler deploy
 ```
 
 `GET /health` reports which services are configured **and which models actually
 resolved** — the fastest way to diagnose a failing AI step.
 
-### 3. R2
+### 3. Storage — pick one
 
-Create a private bucket named `caption-ai-media` and an API token with object
-read/write. The bucket must never be made public; every read goes through a
-short-lived signed URL.
+Both implement the same `StorageProvider` interface, chosen by
+`STORAGE_PROVIDER` (or inferred from whichever keys are set).
+
+**Cloudflare R2.** Create a private bucket named `caption-ai-media` and an API
+token with object read/write. Never make the bucket public — every read is a
+short-lived presigned URL.
+
+```bash
+STORAGE_PROVIDER=r2
+R2_ACCOUNT_ID= / R2_ACCESS_KEY_ID= / R2_SECRET_ACCESS_KEY= / R2_BUCKET_NAME=
+```
+
+**Self-hosted Immich.** Immich has no presigned URLs — just a long-lived
+`x-api-key`. Handing that to a browser is fine for uploads and catastrophic for
+reads, because one key with `asset.read` exposes the whole photo library. So the
+credential is split:
+
+```bash
+STORAGE_PROVIDER=immich
+IMMICH_URL=https://immich.example.com
+IMMICH_API_KEY=       # full scope. Server-side only, never sent to a browser.
+IMMICH_UPLOAD_KEY=    # optional, scope `asset.upload` ONLY. Safe to expose.
+IMMICH_ALBUM_PREFIX=Kinetic
+```
+
+| | With `IMMICH_UPLOAD_KEY` | Without it |
+| --- | --- | --- |
+| Upload | Browser → Immich directly, no size cap | Streamed through the Worker, **capped at 100 MB** |
+| Read | Worker streaming proxy, short-lived signed token | Same |
+
+Create the upload-only key in Immich under *Account Settings → API Keys* and
+tick **only** `asset.upload`. `GET /health` reports which mode is active.
+
+Reads are always proxied, which is affordable only because the editor is
+local-first: the video is already in IndexedDB on the device that made it, so a
+cloud read happens only when opening a project on a second device. Range
+requests are forwarded, so proxied video still seeks.
+
+Uploads are filed into a per-user album. That is organisation, not a security
+boundary — Immich asset ids carry no owner, so ownership is proven by looking
+the key up in the RLS-protected `assets` table.
 
 ---
 
@@ -115,23 +156,36 @@ from the preset and the composition templates, which means **the model cannot
 produce an ugly layout** and **cannot alter the transcript** — lines reference
 word *ids*, and the text is rebuilt from the transcript afterwards.
 
-### Model names are resolved, not hardcoded
+### Model names are resolved at runtime, not hardcoded
 
-Model ids churn. Rather than pinning `gemma-4-31b-it` and returning 404 the day
-it is renamed, the Worker asks the Gemini API which models the key can actually
-see and takes the best available match from an ordered preference chain
-(`apps/worker/src/gemini/client.ts`). The result is cached for an hour.
+Model ids churn, and a listed model is not necessarily a working one. So each
+capability has an ordered chain, and the Worker walks it: it asks the API which
+models the key can see, then tries them in order until one returns something
+usable (`apps/worker/src/gemini/client.ts`).
+
+This is not theoretical. `gemini-3.5-transcribe` is published, accepts audio,
+bills the audio tokens and returns `finishReason: STOP` with **zero content
+parts** — a success at the HTTP layer that yields nothing. Without the chain the
+pipeline silently produced a caption-free video. `gemini-3.5-flash` transcribes
+the same clip perfectly, so it leads the chain. During testing a live 503 on the
+verification pass was also absorbed the same way.
+
+The Worker likewise probes rather than assumes for request *shape*: models that
+reject `systemInstruction` ("Developer instruction is not enabled for this
+model" — both Gemma and the transcribe models) get the system prompt folded into
+the user turn automatically, on a retry triggered by the error itself.
 
 ### Everything degrades
 
 | Failure | What happens |
 | --- | --- |
 | No API configured | Estimated timings from pasted text |
-| Transcription fails | One retry, then pasted text, then a clear message |
+| A model returns an empty response | Falls through to the next model in the chain |
+| Transcription fails entirely | One retry, then pasted text, then a clear message |
 | Verification fails | Keeps the timed transcript |
 | Gemma fails or returns bad JSON | One repair attempt, then the built-in designer |
 | Autosave can't reach Supabase | Stays in IndexedDB, retries on the next edit |
-| R2 upload of an export fails | The MP4 is still downloadable locally |
+| Cloud upload of an export fails | The MP4 is still downloadable locally |
 
 The built-in designer is **not** a degraded "plain subtitles" mode — it drives
 the same composer with heuristics instead of a model, so the video still looks
@@ -143,14 +197,15 @@ designed.
 
 ```
 React (Vercel) ──┬── Supabase ......... auth, project JSON
-                 ├── Cloudflare Worker  JWT check, Gemini/Gemma proxy, R2 signing
-                 │        └── R2 ...... source video, thumbnails, exports
+                 ├── Cloudflare Worker  JWT check, Gemini/Gemma proxy, storage
+                 │        └── R2 or Immich ... source video, thumbnails, exports
                  └── Browser media engine (Mediabunny + WebCodecs)
                           decode · extract audio · keyframes · render · mux MP4
 ```
 
-Large files never pass through the Worker: the browser gets a signed PUT and
-uploads straight to R2. The browser never sees a Gemini key or an R2 credential.
+The browser never sees a Gemini key, an R2 credential, or an Immich read key.
+With R2 (or Immich plus an upload-only key) large files go browser-to-storage
+directly and never pass through the Worker.
 
 ### One rendering engine
 
@@ -245,6 +300,31 @@ too (a client-side limit is a suggestion).
 
 During the free beta, audio goes to Google's free Gemini tier, which may use
 requests to improve their products. Don't upload confidential video.
+
+## End-to-end harness
+
+Runs the real pipeline against a real clip — no mocks — because the parts most
+likely to break (canvas metrics, font loading, WebCodecs) cannot run in Node.
+
+```bash
+node scripts/harness-server.mjs     # serves test.mp4, writes results to disk
+pnpm dev
+open http://localhost:5173/harness
+```
+
+`Full run` does probe → audio → Gemini transcribe → verify → keyframes → Gemma
+design → MP4 export, then writes `result.mp4`, `design.json` and one
+`still-N.png` per scene to the repo root. `Storage only` does an upload →
+album → asset row → signed read → byte-comparison → Range request round trip,
+which is cheap to repeat.
+
+Verified against `test.mp4` (12.1s, 960×720, H.264/AAC):
+
+- transcript: *"We were too close to the stars / I never knew somebody like you…"*
+- Gemma chose `anchor-bottom`, `cascade-left`, `offset-hero`; heroes **Stars**,
+  **Knew**, **Falling**, all set in Style Script
+- export: 12.12s H.264 960×720 with AAC stereo audio intact
+- Immich: 1,139,682 bytes round-tripped byte-identical, Range → HTTP 206
 
 ## Commands
 

@@ -1,7 +1,25 @@
 GEMINI_API_KEY=
 SUPABASE_URL=https://your-project.supabase.co
+# Required: PostgREST rejects a user access token in its `apikey` header.
+SUPABASE_ANON_KEY=
+# Pick one backend. Omit to infer from whichever keys are filled in.
+STORAGE_PROVIDER=
+
+# --- Cloudflare R2 ---
 R2_ACCOUNT_ID=
 R2_ACCESS_KEY_ID=
 R2_SECRET_ACCESS_KEY=
 R2_BUCKET_NAME=caption-ai-media
+
+# --- Self-hosted Immich ---
+IMMICH_URL=
+# Full scope. Server-side only - never sent to a browser.
+IMMICH_API_KEY=
+# Optional, scope `asset.upload` ONLY. Enables direct browser uploads with no
+# 100 MB cap. Safe to expose precisely because it cannot read anything.
+IMMICH_UPLOAD_KEY=
+IMMICH_ALBUM_PREFIX=Kinetic
+
+# HMAC secret for short-lived media read tokens. Required in production.
+STORAGE_TOKEN_SECRET=
 ALLOWED_ORIGIN=http://localhost:5173

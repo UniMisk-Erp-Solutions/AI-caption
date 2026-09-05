@@ -10,7 +10,13 @@ import {
   saveLocalState,
   type LocalProject,
 } from '../db/local';
-import { deleteObject, requestDownloadUrl, requestUploadUrl, uploadToSignedUrl } from './api';
+import {
+  completeUpload,
+  deleteObject,
+  performUpload,
+  requestDownloadUrl,
+  requestUploadUrl,
+} from './api';
 import { hasApi, hasSupabase } from './env';
 import {
   createRemoteProject,
@@ -18,6 +24,7 @@ import {
   getRemoteProject,
   listRemoteProjects,
   parseRemoteState,
+  recordAsset,
   saveRemoteState,
   updateRemoteProject,
 } from './supabase';
@@ -153,7 +160,7 @@ export async function createProject(input: {
 }
 
 /**
- * Push the source video to R2.
+ * Push the source video to cloud storage.
  *
  * Deliberately fire-and-forgettable: the editor works off the local blob, so a
  * failed upload delays cross-device access but does not block the user.
@@ -161,6 +168,7 @@ export async function createProject(input: {
 export async function uploadSource(
   projectId: string,
   file: Blob,
+  fileName = 'source.mp4',
   onProgress?: (fraction: number) => void,
   signal?: AbortSignal,
 ): Promise<string | null> {
@@ -171,14 +179,31 @@ export async function uploadSource(
     mimeType: file.type || 'video/mp4',
     size: file.size,
     kind: 'source_video',
+    fileName,
   });
 
-  await uploadToSignedUrl(ticket.uploadUrl, file, onProgress, signal);
-  await updateRemoteProject(projectId, { source_object_key: ticket.objectKey, status: 'ready' }).catch(
+  const objectKey = await performUpload(ticket, file, fileName, onProgress, signal);
+
+  // Direct uploads to a backend that assigns its own id have to be reported, so
+  // the server can file the asset and we can record the key.
+  if (!ticket.objectKey) {
+    await completeUpload({ projectId, kind: 'source_video', objectKey }).catch(() => undefined);
+  }
+
+  await recordAsset({
+    projectId,
+    kind: 'source_video',
+    provider: ticket.provider,
+    objectKey,
+    mimeType: file.type || 'video/mp4',
+    sizeBytes: file.size,
+  });
+
+  await updateRemoteProject(projectId, { source_object_key: objectKey, status: 'ready' }).catch(
     () => undefined,
   );
   await patchLocalProject(projectId, { status: 'ready' });
-  return ticket.objectKey;
+  return objectKey;
 }
 
 /* ------------------------------------------------------------------ */

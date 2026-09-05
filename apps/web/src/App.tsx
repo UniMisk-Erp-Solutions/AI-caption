@@ -7,6 +7,7 @@ import { AuthPage } from './features/auth/AuthPage';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { DemoPage } from './features/demo/DemoPage';
 import { EditorPage } from './features/editor/EditorPage';
+import { HarnessPage } from './features/harness/HarnessPage';
 import { UploadPage } from './features/upload/UploadPage';
 
 /**
@@ -25,6 +26,8 @@ export function App() {
         <Route path="/signin" element={<AuthPage />} />
         {/* Public, so the tool can be evaluated before signing up. */}
         <Route path="/gallery" element={<DemoPage />} />
+        {/* Dev-only end-to-end check. Needs scripts/harness-server.mjs running. */}
+        <Route path="/harness" element={<HarnessPage />} />
         <Route
           path="/"
           element={

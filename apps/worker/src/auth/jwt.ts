@@ -78,13 +78,22 @@ export async function assertProjectOwnership(
 
   const response = await fetch(url, {
     headers: {
+      // The user's token drives RLS, so this query can only ever see their rows.
       Authorization: `Bearer ${token}`,
-      // PostgREST requires an apikey header; the user's own JWT serves as one
-      // and keeps every query bound to their RLS policies.
-      apikey: token,
+      // PostgREST's `apikey` must be a project key - a user access token is
+      // rejected by the API gateway before RLS is even reached.
+      apikey: env.SUPABASE_ANON_KEY,
       Accept: 'application/json',
     },
   });
+
+  if (response.status === 401) {
+    throw new HttpError(
+      500,
+      'The server is missing SUPABASE_ANON_KEY, so it cannot verify project access.',
+      'no_anon_key',
+    );
+  }
 
   if (!response.ok) {
     throw new HttpError(403, 'Could not verify project access.', 'ownership_check_failed');

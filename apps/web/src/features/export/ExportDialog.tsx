@@ -5,8 +5,8 @@ import { saveLocalExport } from '../../db/local';
 import { formatBytes, formatTime } from '../../lib/format';
 import { newId } from '../../lib/id';
 import { hasApi } from '../../lib/env';
-import { requestUploadUrl, uploadToSignedUrl } from '../../lib/api';
-import { recordRemoteExport } from '../../lib/supabase';
+import { completeUpload, performUpload, requestUploadUrl } from '../../lib/api';
+import { recordAsset, recordRemoteExport } from '../../lib/supabase';
 import {
   checkExportSupport,
   exportVideo,
@@ -109,16 +109,32 @@ export function ExportDialog({ open, onClose, projectId, source }: Props) {
 
       if (uploadToCloud && hasApi) {
         try {
+          const fileName = `kinetic-${projectId.slice(0, 8)}-${Date.now()}.mp4`;
           const ticket = await requestUploadUrl({
             projectId,
             mimeType: 'video/mp4',
             size: output.blob.size,
             kind: 'export',
+            fileName,
           });
-          await uploadToSignedUrl(ticket.uploadUrl, output.blob);
+
+          const objectKey = await performUpload(ticket, output.blob, fileName);
+          if (!ticket.objectKey) {
+            await completeUpload({ projectId, kind: 'export', objectKey }).catch(() => undefined);
+          }
+
+          await recordAsset({
+            projectId,
+            kind: 'export',
+            provider: ticket.provider,
+            objectKey,
+            mimeType: 'video/mp4',
+            sizeBytes: output.blob.size,
+            durationMs: output.durationMs,
+          });
           await recordRemoteExport({
             projectId,
-            objectKey: ticket.objectKey,
+            objectKey,
             width: output.width,
             height: output.height,
             fps: output.fps,

@@ -81,10 +81,27 @@ async function request<T>(
 /* Storage                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * An upload instruction from the Worker.
+ *
+ * Not just a URL, because the two storage backends genuinely differ: R2 wants a
+ * raw PUT to a presigned URL, while Immich wants a multipart POST carrying an
+ * API key and metadata fields. Describing the whole request keeps that
+ * difference on the server, where it belongs.
+ */
 export interface UploadTicket {
-  uploadUrl: string;
-  objectKey: string;
+  method: 'PUT' | 'POST';
+  url: string;
+  headers: Record<string, string>;
+  /** When present, send multipart/form-data with these fields plus the file. */
+  formFields?: Record<string, string>;
+  fileField?: string;
+  /** Null when the backend assigns the id and reports it in the response. */
+  objectKey: string | null;
+  /** Field of the JSON upload response holding the assigned id. */
+  objectKeyFrom?: string;
   expiresAt: number;
+  provider: 'r2' | 'immich';
 }
 
 export async function requestUploadUrl(input: {
@@ -92,6 +109,7 @@ export async function requestUploadUrl(input: {
   mimeType: string;
   size: number;
   kind: 'source_video' | 'thumbnail' | 'export';
+  fileName?: string;
 }): Promise<UploadTicket> {
   return request<UploadTicket>('/storage/upload-url', { method: 'POST', json: input });
 }
@@ -105,37 +123,84 @@ export async function deleteObject(objectKey: string): Promise<void> {
 }
 
 /**
- * Upload straight to R2 with the signed URL.
+ * Perform an upload described by a ticket, and return the final object key.
  *
- * Deliberately not routed through the Worker: a 200MB body through a Worker
- * costs CPU time and gains nothing, and the signed PUT is already scoped to one
- * object key that the server chose.
+ * Large files never pass through the Worker when the backend supports direct
+ * uploads; when it does not, the ticket simply points back at the Worker and
+ * this same code path handles it.
  */
-export async function uploadToSignedUrl(
-  url: string,
+export async function performUpload(
+  ticket: UploadTicket,
   blob: Blob,
+  fileName: string,
   onProgress?: (fraction: number) => void,
   signal?: AbortSignal,
-): Promise<void> {
-  // XHR rather than fetch, purely because fetch still has no upload progress.
-  await new Promise<void>((resolve, reject) => {
+): Promise<string> {
+  let body: XMLHttpRequestBodyInit;
+  const headers = { ...ticket.headers };
+
+  if (ticket.formFields) {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(ticket.formFields)) form.append(key, value);
+    form.append(ticket.fileField ?? 'file', blob, fileName);
+    body = form;
+    // Never set Content-Type for FormData - the browser must add the multipart
+    // boundary itself, and overriding it produces an unparseable request.
+    delete headers['Content-Type'];
+  } else {
+    body = blob;
+    headers['Content-Type'] = headers['Content-Type'] ?? blob.type ?? 'application/octet-stream';
+  }
+
+  // The Worker's own routes need the user's token; a presigned URL must not
+  // receive it, or S3 rejects the request for having two auth mechanisms.
+  if (ticket.url.includes('/storage/upload')) {
+    const token = await getAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+
+  const responseText = await new Promise<string>((resolve, reject) => {
+    // XHR rather than fetch, purely because fetch still has no upload progress.
     const xhr = new XMLHttpRequest();
-    xhr.open('PUT', url, true);
-    xhr.setRequestHeader('Content-Type', blob.type || 'application/octet-stream');
+    xhr.open(ticket.method, ticket.url, true);
+    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress?.(event.loaded / event.total);
     };
     xhr.onload = () =>
       xhr.status >= 200 && xhr.status < 300
-        ? resolve()
-        : reject(new ApiError(`Upload failed (${xhr.status})`, xhr.status));
-    xhr.onerror = () => reject(new ApiError('Upload failed', 0));
+        ? resolve(xhr.responseText)
+        : reject(new ApiError(`Upload failed (${xhr.status}) ${xhr.responseText.slice(0, 200)}`, xhr.status));
+    xhr.onerror = () => reject(new ApiError('Upload failed - could not reach storage.', 0));
     xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'));
 
     signal?.addEventListener('abort', () => xhr.abort(), { once: true });
-    xhr.send(blob);
+    xhr.send(body);
   });
+
+  if (ticket.objectKey) return ticket.objectKey;
+
+  // The backend assigned the id, so read it out of the response.
+  const field = ticket.objectKeyFrom ?? 'id';
+  try {
+    const parsed = JSON.parse(responseText) as Record<string, unknown>;
+    const assigned = parsed[field] ?? parsed.objectKey;
+    if (typeof assigned === 'string' && assigned.length > 0) return assigned;
+  } catch {
+    /* fall through to the error below */
+  }
+
+  throw new ApiError('The storage backend did not return an object id.', 502);
+}
+
+/** Report a direct upload so the server can file it and record the key. */
+export async function completeUpload(input: {
+  projectId: string;
+  kind: 'source_video' | 'thumbnail' | 'export';
+  objectKey: string;
+}): Promise<void> {
+  await request('/storage/complete', { method: 'POST', json: input });
 }
 
 /* ------------------------------------------------------------------ */

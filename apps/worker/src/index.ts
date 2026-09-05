@@ -2,7 +2,16 @@ import { ZodError } from 'zod';
 import { resolveAllModels } from './gemini/client';
 import { corsHeaders, errorResponse, HttpError, json, type Env } from './lib/env';
 import { handleAnalyzeAudio, handleDesign, handleRedesignScene, handleTranscribe } from './routes/ai';
-import { handleDelete, handleDownloadUrl, handleUploadUrl } from './routes/storage';
+import {
+  handleComplete,
+  handleDelete,
+  handleDownloadUrl,
+  handleProxyUpload,
+  handleStream,
+  handleUploadUrl,
+} from './routes/storage';
+import { getStorageProvider, hasStorage } from './storage';
+import { immichMode } from './storage/immich';
 
 /**
  * The API gateway.
@@ -16,7 +25,10 @@ type Handler = (request: Request, env: Env, headers: HeadersInit) => Promise<Res
 
 const ROUTES: Record<string, { method: string; handler: Handler }> = {
   '/storage/upload-url': { method: 'POST', handler: handleUploadUrl },
+  '/storage/upload': { method: 'POST', handler: handleProxyUpload },
+  '/storage/complete': { method: 'POST', handler: handleComplete },
   '/storage/download-url': { method: 'POST', handler: handleDownloadUrl },
+  '/storage/stream': { method: 'GET', handler: handleStream },
   '/storage/delete': { method: 'POST', handler: handleDelete },
   '/ai/transcribe': { method: 'POST', handler: handleTranscribe },
   '/ai/analyze-audio': { method: 'POST', handler: handleAnalyzeAudio },
@@ -78,14 +90,38 @@ async function handleHealth(env: Env, headers: HeadersInit): Promise<Response> {
   const configured = {
     gemini: Boolean(env.GEMINI_API_KEY),
     supabase: Boolean(env.SUPABASE_URL),
-    r2: Boolean(env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID),
+    storage: hasStorage(env),
     usageCounters: Boolean(env.USAGE),
   };
+
+  // Report the storage arrangement, because "why is my upload failing" is
+  // almost always a missing key or the wrong upload mode.
+  let storage: Record<string, unknown> | null = null;
+  if (configured.storage) {
+    try {
+      const provider = getStorageProvider(env);
+      storage = {
+        provider: provider.id,
+        ...(provider.id === 'immich'
+          ? {
+              url: env.IMMICH_URL,
+              uploadMode: immichMode(env),
+              note:
+                immichMode(env) === 'proxy'
+                  ? 'Uploads stream through the Worker and are capped at 100 MB. Set IMMICH_UPLOAD_KEY (scope: asset.upload) for direct uploads with no cap.'
+                  : 'Uploads go straight from the browser to Immich.',
+            }
+          : { bucket: env.R2_BUCKET_NAME }),
+      };
+    } catch {
+      storage = null;
+    }
+  }
 
   let models: Record<string, string> | null = null;
   if (configured.gemini) {
     models = await resolveAllModels(env).catch(() => null);
   }
 
-  return json({ ok: true, configured, models }, {}, headers);
+  return json({ ok: true, configured, storage, models }, {}, headers);
 }

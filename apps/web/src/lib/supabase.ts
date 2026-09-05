@@ -212,6 +212,53 @@ export async function saveRemoteTranscript(input: {
   if (error) throw error;
 }
 
+/**
+ * Record an uploaded asset.
+ *
+ * This is not just bookkeeping. With Immich, asset ids carry no owner
+ * information, so the Worker proves ownership by looking the key up in this
+ * table - which is behind RLS and therefore only ever returns the caller's own
+ * rows. If this insert does not happen, playback and deletion will correctly
+ * refuse the file.
+ */
+export async function recordAsset(input: {
+  projectId: string;
+  kind: 'source_video' | 'thumbnail' | 'export';
+  provider: string;
+  objectKey: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  durationMs?: number;
+}): Promise<void> {
+  if (!supabase) return;
+  const userId = await getUserId();
+  if (!userId) return;
+
+  const row = {
+    user_id: userId,
+    project_id: input.projectId,
+    type: input.kind,
+    provider: input.provider,
+    object_key: input.objectKey,
+    mime_type: input.mimeType ?? null,
+    size_bytes: input.sizeBytes ?? null,
+    duration_ms: input.durationMs ?? null,
+  };
+
+  const { error } = await supabase.from('assets').upsert(row, { onConflict: 'provider,object_key' });
+  if (!error) return;
+
+  // 42P10 means the unique index this upsert targets does not exist yet, i.e.
+  // migration 0002 has not been applied. Fall back to a plain insert so the app
+  // still works; the only cost is a duplicate row on re-upload.
+  if (error.code === '42P10') {
+    const { error: insertError } = await supabase.from('assets').insert(row);
+    if (insertError && insertError.code !== '23505') throw insertError;
+    return;
+  }
+  throw error;
+}
+
 export async function recordRemoteExport(input: {
   projectId: string;
   objectKey: string;
