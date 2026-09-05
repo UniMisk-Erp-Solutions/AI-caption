@@ -11,7 +11,9 @@ compatibility_flags = ["nodejs_compat"]
 # id = "REPLACE_ME"
 
 [vars]
-ALLOWED_ORIGIN = "http://localhost:5173"
+# Exact-matched against the browser's Origin header, so each entry needs its
+# scheme - "example.com" never matches, "https://example.com" does.
+ALLOWED_ORIGIN = "http://localhost:5173,https://ai-reel-caption-seven.vercel.app"
 R2_BUCKET_NAME = "caption-ai-media"
 
 # Secrets - set with `wrangler secret put <NAME>`, never in this file:
