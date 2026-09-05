@@ -1,7 +1,7 @@
-import { PRESET_REGISTRY, UPLOAD_LIMITS, type PresetId } from '@kc/shared';
+import { UPLOAD_LIMITS } from '@kc/shared';
 import { useCallback, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Field, SegmentedControl, Select, Spinner } from '../../components/ui';
+import { Field, SegmentedControl, Spinner } from '../../components/ui';
 import { cn } from '../../lib/cn';
 import { hasApi } from '../../lib/env';
 import { formatBytes, formatTime } from '../../lib/format';
@@ -34,7 +34,6 @@ export function UploadPage() {
   const [dragOver, setDragOver] = useState(false);
 
   const [mode, setMode] = useState<'auto' | 'speech' | 'song'>('auto');
-  const [style, setStyle] = useState<PresetId | 'AUTO'>('AUTO');
   const [transcript, setTranscript] = useState('');
 
   const [steps, setSteps] = useState<StepState[]>(INITIAL_STEPS);
@@ -106,7 +105,7 @@ export function UploadPage() {
         : Promise.resolve(null);
 
       const result = await runPipeline(
-        { projectId, file, media, mode, userTranscript: transcript || undefined, style },
+        { projectId, file, media, mode, userTranscript: transcript || undefined },
         setSteps,
       );
 
@@ -120,7 +119,7 @@ export function UploadPage() {
       setError(err instanceof Error ? err.message : 'Processing failed.');
       setStage('configure');
     }
-  }, [file, media, mode, transcript, style, navigate]);
+  }, [file, media, mode, transcript, navigate]);
 
   /* ---------------------------------------------------------------- */
 
@@ -230,20 +229,6 @@ export function UploadPage() {
                   { value: 'auto', label: 'Auto' },
                   { value: 'speech', label: 'Speech' },
                   { value: 'song', label: 'Song / lyrics' },
-                ]}
-              />
-            </Field>
-
-            <Field label="Look" hint="You can change this at any time in the editor, instantly.">
-              <Select
-                value={style}
-                onChange={(v) => setStyle(v as PresetId | 'AUTO')}
-                options={[
-                  { value: 'AUTO', label: 'Auto — let the AI choose' },
-                  ...(Object.keys(PRESET_REGISTRY) as PresetId[]).map((id) => ({
-                    value: id,
-                    label: PRESET_REGISTRY[id].label,
-                  })),
                 ]}
               />
             </Field>

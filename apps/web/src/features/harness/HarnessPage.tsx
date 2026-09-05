@@ -117,7 +117,7 @@ export function HarnessPage() {
       /* ---------------------------------------------- pipeline ----- */
       say('running the real pipeline (Gemini transcribe -> verify -> Gemma design)…');
       const result = await runPipeline(
-        { projectId, file, media, mode: 'auto', style: 'AUTO' },
+        { projectId, file, media, mode: 'auto' },
         setSteps,
       );
 

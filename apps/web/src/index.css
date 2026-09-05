@@ -13,10 +13,34 @@
     height: 100%;
   }
 
+  /* This is a fixed-viewport app, not a scrolling document. Pinning the shell
+     to the viewport width means one over-wide child can never introduce
+     sideways scroll on a phone - it clips instead, and the panel that owns the
+     content does its own scrolling. */
+  html,
+  body,
+  #root {
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
   body {
     @apply bg-ink-950 text-ink-100 font-ui antialiased;
     margin: 0;
     overscroll-behavior: none;
+    /* A single unconstrained flex child can otherwise push the whole page
+       wider than a phone viewport and produce sideways scroll. */
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Comfortable touch targets without inflating the dense desktop panels. */
+  @media (pointer: coarse) {
+    button,
+    [role='button'],
+    select {
+      min-height: 40px;
+    }
   }
 
   /* The editor is a fixed-height app shell, not a scrolling document. */

@@ -3,6 +3,7 @@ import {
   autoDesign,
   buildScene,
   captionLayerSchema,
+  applyCase,
   editorStateSchema,
   getPreset,
   groupIntoScenes,
@@ -13,6 +14,7 @@ import {
   type CaptionScene,
   type EditorState,
   type TextRun,
+  type TextTransform,
   type TranscriptWord,
 } from '@kc/shared';
 import { create } from 'zustand';
@@ -74,6 +76,9 @@ interface EditorStore {
   /* mutations */
   updateLayer(layerId: string, patch: Partial<CaptionLayer>, options?: { transient?: boolean }): void;
   updateRun(layerId: string, runId: string, patch: Partial<TextRun>): void;
+  setRunCase(layerId: string, runId: string, mode: TextTransform): void;
+  setRunText(layerId: string, runId: string, text: string): void;
+  mergeRuns(layerId: string): void;
   setRunEmphasis(layerId: string, runId: string, emphasis: TextRun['emphasis']): void;
   setLayerText(layerId: string, text: string): void;
   splitRunAtWord(layerId: string, runId: string, wordIndex: number): void;
@@ -266,6 +271,99 @@ export const useEditorStore = create<EditorStore>((set, get) => {
           locked: true,
           runs: layer.runs.map((r) => (r.id === runId ? { ...r, ...patch } : r)),
         })),
+      );
+    },
+
+    /**
+     * Change a run's case without losing information.
+     *
+     * `rawText` holds the words as spoken, so going uppercase and back to title
+     * case round-trips exactly. Transforming the already-transformed text would
+     * not - once it is UPPERCASE there is no way to know it was "New York".
+     */
+    setRunCase(layerId, runId, mode) {
+      const { state } = get();
+      if (!state) return;
+
+      const wordsById = new Map(state.transcript.words.map((w) => [w.id, w]));
+
+      commit(
+        withLayer(state, layerId, (layer) => ({
+          ...layer,
+          locked: true,
+          runs: layer.runs.map((run) => {
+            if (run.id !== runId) return run;
+            const raw =
+              run.rawText ||
+              run.wordIds.map((id) => wordsById.get(id)?.text ?? '').join(' ').trim() ||
+              run.text;
+            return { ...run, rawText: raw, textTransform: mode, text: applyCase(raw, mode) };
+          }),
+        })),
+      );
+    },
+
+    /** Retype one run, leaving every other run's styling untouched. */
+    setRunText(layerId, runId, text) {
+      const { state } = get();
+      if (!state) return;
+      const trimmed = text.trim();
+      if (trimmed.length === 0) return;
+
+      commit(
+        withLayer(state, layerId, (layer) => ({
+          ...layer,
+          locked: true,
+          runs: layer.runs.map((run) =>
+            run.id === runId
+              ? { ...run, rawText: trimmed, text: applyCase(trimmed, run.textTransform) }
+              : run,
+          ),
+        })),
+      );
+    },
+
+    /**
+     * Collapse adjacent runs that share a style back into one.
+     *
+     * Splitting a run to restyle one word leaves fragments behind; without this
+     * a line slowly turns into a dozen single-word runs that are tedious to
+     * edit and slower to lay out.
+     */
+    mergeRuns(layerId) {
+      const { state } = get();
+      if (!state) return;
+
+      commit(
+        withLayer(state, layerId, (layer) => {
+          const merged: TextRun[] = [];
+          for (const run of layer.runs) {
+            const prev = merged[merged.length - 1];
+            const same =
+              prev &&
+              prev.fontId === run.fontId &&
+              prev.fontWeight === run.fontWeight &&
+              prev.italic === run.italic &&
+              prev.color === run.color &&
+              prev.emphasis === run.emphasis &&
+              Math.abs(prev.sizeScale - run.sizeScale) < 0.001 &&
+              Math.abs(prev.letterSpacing - run.letterSpacing) < 0.0001 &&
+              Math.abs(prev.opacity - run.opacity) < 0.001;
+
+            if (same) {
+              merged[merged.length - 1] = {
+                ...prev,
+                text: `${prev.text} ${run.text}`.trim(),
+                rawText: `${prev.rawText || prev.text} ${run.rawText || run.text}`.trim(),
+                wordIds: [...prev.wordIds, ...run.wordIds],
+                tuckAfter: run.tuckAfter,
+              };
+            } else {
+              merged.push(run);
+            }
+          }
+          return { ...layer, locked: true, runs: merged };
+        }),
       );
     },
 

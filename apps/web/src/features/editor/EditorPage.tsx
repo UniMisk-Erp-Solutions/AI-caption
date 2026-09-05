@@ -50,6 +50,8 @@ export function EditorPage() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [leftTab, setLeftTab] = useState<'style' | 'transcript'>('style');
+  // Which panel the bottom sheet shows on small screens. Null = canvas only.
+  const [sheet, setSheet] = useState<'style' | 'words' | 'transcript' | null>(null);
 
   const sourceRef = useRef<Blob | null>(null);
 
@@ -333,7 +335,7 @@ export function EditorPage() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-[100dvh] flex-col overflow-hidden">
       {/* header */}
       <header className="flex shrink-0 items-center gap-3 border-b border-ink-800 bg-ink-900 px-4 py-2.5">
         <Link to="/" className="font-display text-lg leading-none text-ink-100 hover:text-accent">
@@ -354,11 +356,11 @@ export function EditorPage() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
-          <span className="hidden text-[11px] text-ink-600 lg:inline">
+          <span className="hidden text-[11px] text-ink-600 xl:inline">
             {state.project.width}×{state.project.height} · {formatTime(state.project.durationMs)}
           </span>
           <UndoRedo />
-          <button className="btn-primary" onClick={() => setExportOpen(true)}>
+          <button className="btn-primary hidden lg:inline-flex" onClick={() => setExportOpen(true)}>
             Export
           </button>
         </div>
@@ -374,8 +376,9 @@ export function EditorPage() {
       )}
 
       {/* body */}
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-[280px] shrink-0 flex-col border-r border-ink-800 bg-ink-900">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* Desktop: a fixed left column. Mobile: this lives in a bottom sheet. */}
+        <aside className="hidden w-[300px] shrink-0 flex-col border-r border-ink-800 bg-ink-900 lg:flex">
           <div className="flex shrink-0 border-b border-ink-800">
             {(['style', 'transcript'] as const).map((tab) => (
               <button
@@ -401,18 +404,71 @@ export function EditorPage() {
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 bg-ink-950 p-6">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 bg-ink-950 p-2 sm:p-4 lg:p-6">
             <CanvasStage videoUrl={videoUrl} />
           </div>
-          <div className="h-[190px] shrink-0 border-t border-ink-800">
+          <div className="h-[150px] shrink-0 border-t border-ink-800 sm:h-[190px]">
             <Timeline waveform={waveform} />
           </div>
         </main>
 
-        <aside className="w-[300px] shrink-0 border-l border-ink-800 bg-ink-900">
+        <aside className="hidden w-[320px] shrink-0 border-l border-ink-800 bg-ink-900 lg:block">
           <InspectorPanel />
         </aside>
+      </div>
+
+      {/* Mobile: panels as a bottom sheet, driven by a tab bar. Editing on a
+          phone needs the canvas visible while a panel is open, so the sheet
+          covers at most 70% of the viewport and the canvas stays above it. */}
+      <div className="lg:hidden">
+        {sheet && (
+          <>
+            <div
+              className="fixed inset-0 z-30 bg-black/40"
+              onClick={() => setSheet(null)}
+              aria-hidden
+            />
+            <div className="fixed inset-x-0 bottom-[56px] z-40 flex h-[70vh] flex-col rounded-t-2xl border-t border-ink-700 bg-ink-900 shadow-2xl">
+              <div className="flex shrink-0 items-center justify-between border-b border-ink-800 px-4 py-2.5">
+                <span className="text-sm font-medium capitalize text-ink-200">{sheet}</span>
+                <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setSheet(null)}>
+                  Done
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {sheet === 'style' && <StylePanel onAiAction={runAiAction} aiBusy={aiBusy} />}
+                {sheet === 'words' && <InspectorPanel />}
+                {sheet === 'transcript' && <TranscriptPanel />}
+              </div>
+            </div>
+          </>
+        )}
+
+        <nav className="fixed inset-x-0 bottom-0 z-50 flex h-[56px] items-stretch border-t border-ink-800 bg-ink-900 pb-[env(safe-area-inset-bottom)]">
+          {([
+            ['style', 'Style'],
+            ['words', 'Text'],
+            ['transcript', 'Words'],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setSheet(sheet === key ? null : key)}
+              className={cn(
+                'flex-1 text-xs font-medium transition',
+                sheet === key ? 'bg-ink-800 text-accent-soft' : 'text-ink-400',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          <button
+            onClick={() => setExportOpen(true)}
+            className="flex-1 bg-accent text-xs font-semibold text-ink-950"
+          >
+            Export
+          </button>
+        </nav>
       </div>
 
       <ExportDialog

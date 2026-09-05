@@ -1,7 +1,7 @@
 import { ANIMATION_REGISTRY } from '../design/animations';
 import { COMPOSITION_REGISTRY } from '../design/compositions';
 import { FONT_REGISTRY } from '../design/fonts';
-import { PRESET_REGISTRY } from '../design/presets';
+import { getPreset } from '../design/presets';
 import type { DesignRequest, RedesignSceneRequest } from '../schemas/ai';
 
 /**
@@ -22,14 +22,26 @@ import type { DesignRequest, RedesignSceneRequest } from '../schemas/ai';
 /* Reference tables                                                    */
 /* ------------------------------------------------------------------ */
 
-function presetTable(): string {
-  return Object.values(PRESET_REGISTRY)
-    .map((p) => {
-      const base = FONT_REGISTRY[p.voices.base.fontId].family;
-      const hero = FONT_REGISTRY[p.voices.hero.fontId].family;
-      return `- ${p.id}: ${p.description}\n    pairing: ${base} (sentence) + ${hero} (hero word, ${p.voices.hero.sizeScale}x size)`;
-    })
-    .join('\n');
+/**
+ * Describe one preset, not the whole registry.
+ *
+ * There are 135 presets; listing them would dominate the prompt and invite the
+ * model to shop for a look instead of doing its actual job. The look is already
+ * chosen - deterministically, from the transcript and the measured shot mix -
+ * so the model is simply told what it is working in.
+ */
+function presetBrief(id: string): string {
+  const preset = getPreset(id);
+
+  const face = (fontId: string) =>
+    FONT_REGISTRY[fontId as keyof typeof FONT_REGISTRY]?.family ?? fontId;
+
+  return [
+    `${preset.id} - ${preset.description}`,
+    `  the sentence is set in ${face(preset.voices.base.fontId)}`,
+    `  the hero word is set in ${face(preset.voices.hero.fontId)} at ${preset.voices.hero.sizeScale}x size`,
+    `  the accent face is ${face(preset.voices.accent.fontId)}`,
+  ].join('\n');
 }
 
 function compositionTable(): string {
@@ -115,7 +127,7 @@ HARD RULES
 export function responseShape(): string {
   return `{
   "direction": {
-    "preset": "<preset id>",
+    "preset": "<keep the preset id you were given>",
     "motionLevel": 0.0-1.0,
     "rotationLevel": 0.0-1.0,
     "heroContrast": 0.5-2.0,
@@ -155,10 +167,11 @@ export function buildDesignPrompt(req: DesignRequest): PromptPart[] {
   const parts: PromptPart[] = [];
   const orientation = req.dimensions.height >= req.dimensions.width ? 'portrait' : 'landscape';
 
-  const styleLine =
-    req.style === 'AUTO'
-      ? 'Choose the preset yourself, based on the footage and the mood.'
-      : `The user has chosen the preset ${req.style}. Use it for every scene.`;
+  // The look is already decided, deterministically, from the transcript and
+  // the measured shot mix. The model works inside it rather than shopping for
+  // one - which also keeps 135 preset descriptions out of the prompt.
+  const styleLine = `The art direction for this video is fixed. Work inside it:
+${presetBrief(req.style)}`;
 
   parts.push({
     type: 'text',
@@ -169,9 +182,6 @@ ${req.scenes.length} scenes
 
 STYLE
 ${styleLine}
-
-AVAILABLE PRESETS
-${presetTable()}
 
 AVAILABLE COMPOSITIONS
 ${compositionTable()}

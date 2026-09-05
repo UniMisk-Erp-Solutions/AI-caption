@@ -4,6 +4,26 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react()],
   server: { port: 5173 },
-  build: { target: 'es2022' },
   worker: { format: 'es' },
+  build: {
+    target: 'es2022',
+    // 144 font stylesheets each become their own tiny chunk, so the default
+    // warning fires constantly and hides real problems.
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          // Media decoding is only needed once a project is open, and it is by
+          // far the largest dependency - splitting it keeps the dashboard and
+          // the gallery light on a phone.
+          if (id.includes('mediabunny')) return 'media';
+          if (id.includes('@supabase')) return 'supabase';
+          if (id.includes('react') || id.includes('scheduler')) return 'react';
+          if (id.includes('dexie') || id.includes('zustand') || id.includes('zod')) return 'state';
+          return undefined;
+        },
+      },
+    },
+  },
 });

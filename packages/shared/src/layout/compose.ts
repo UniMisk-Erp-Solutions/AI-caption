@@ -55,11 +55,21 @@ export interface ProjectDims {
  * pick a starting size, because the renderer measures for real and shrinks to
  * fit before drawing anything.
  */
+/**
+ * Estimated width of a run, in px.
+ *
+ * Deliberately biased to over-estimate. Under-estimating lets a line be placed
+ * where it does not actually fit and then clipped at the frame edge, which is
+ * far worse than type coming out a few percent smaller than it could have been.
+ * Italic and high-contrast faces were the ones that overflowed.
+ */
 export function estimateRunWidth(run: TextRun, layerFontPx: number): number {
   const font = getFont(run.fontId);
   const size = layerFontPx * run.sizeScale;
   const upperBias = run.text === run.text.toUpperCase() && /[A-Z]/.test(run.text) ? 1.08 : 1;
-  return run.text.length * size * (font.advance * upperBias + run.letterSpacing);
+  const italicBias = run.italic ? 1.05 : 1;
+  const SAFETY = 1.07;
+  return run.text.length * size * (font.advance * upperBias * italicBias + run.letterSpacing) * SAFETY;
 }
 
 export function estimateLayerWidth(layer: CaptionLayer, frameH: number): number {
@@ -136,6 +146,10 @@ export function buildRuns(
         letterSpacing: voice.tracking + font.defaultTracking,
         baselineShift: voice.baselineShift,
         color: dir.palette[Math.min(2, Math.max(0, voice.colorIndex))] ?? '#FFFFFF',
+        opacity: 1,
+        // Kept so the inspector can change case losslessly later.
+        rawText: raw,
+        textTransform: voice.textTransform,
         tuckBefore: runs.length === 0 ? 0 : tuck,
         tuckAfter: tuck,
         breakBefore: false,

@@ -1,9 +1,11 @@
 import {
-  PRESET_REGISTRY,
+  PRESET_IDS,
+  PRESET_TAGS,
   artDirectionSchema,
   autoDesign,
   editorStateSchema,
   estimateTimings,
+  getFont,
   getPreset,
   groupIntoScenes,
   renderFrame,
@@ -18,10 +20,14 @@ import { cn } from '../../lib/cn';
 /**
  * The style gallery.
  *
- * Every preset, laid out over the same sentence, rendered by the real engine —
- * this is the fastest way to see what the tool actually makes without
- * uploading anything, and it doubles as a visual regression check: if the
- * composer or renderer breaks, it is obvious here first.
+ * Every preset laid out over the same sentence by the real renderer - the
+ * fastest way to see what the tool makes without uploading anything, and a
+ * visual regression check: if the composer or renderer breaks, it shows here
+ * first.
+ *
+ * Paginated deliberately. Composing all 135 presets in one pass blocks the main
+ * thread long enough that the page renders blank, which is exactly what
+ * happened the first time the registry grew past nine.
  */
 
 const SAMPLES = [
@@ -38,18 +44,37 @@ const BACKDROPS = [
   'linear-gradient(180deg, #1d2118 0%, #4a5a3a 50%, #0f120c 100%)',
 ];
 
+const PAGE_SIZE = 12;
+
 export function DemoPage() {
-  // ?s=2 selects a sample, so a particular layout can be linked to directly.
+  const params = new URLSearchParams(window.location.search);
+
   const [sampleIndex, setSampleIndex] = useState(() => {
-    const requested = Number(new URLSearchParams(window.location.search).get('s'));
+    const requested = Number(params.get('s'));
     return Number.isInteger(requested) && requested >= 0 && requested < SAMPLES.length ? requested : 0;
   });
+  const [tag, setTag] = useState<string | null>(params.get('tag'));
+  const [page, setPage] = useState(0);
+
   const sample = SAMPLES[sampleIndex];
 
+  const filtered = useMemo(
+    () => (tag ? PRESET_IDS.filter((id) => getPreset(id).tags.includes(tag)) : PRESET_IDS),
+    [tag],
+  );
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const visible = useMemo(
+    () => filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [filtered, page],
+  );
+
+  // Only the presets on screen are composed - twelve layouts per render rather
+  // than a hundred and thirty-five.
   const states = useMemo(() => {
     const words = estimateTimings(sample, { durationMs: 8000 });
 
-    return (Object.keys(PRESET_REGISTRY) as PresetId[]).map((presetId) => {
+    return visible.map((presetId) => {
       const preset = getPreset(presetId);
       const direction = artDirectionSchema.parse({
         preset: presetId,
@@ -72,52 +97,113 @@ export function DemoPage() {
         }),
       };
     });
-  }, [sample]);
+  }, [sample, visible]);
+
+  useEffect(() => setPage(0), [tag]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-10">
+    <div className="mx-auto w-full max-w-6xl overflow-x-hidden px-4 py-8 sm:px-6 sm:py-10">
       <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="font-display text-4xl leading-none text-ink-100">Style gallery</h1>
+        <div className="min-w-0 flex-1">
+          <h1 className="font-display text-3xl leading-none text-ink-100 sm:text-4xl">
+            Style gallery
+          </h1>
           <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-400">
-            The same sentence through every preset, drawn by the real renderer.
-            One word per screen is promoted to the pairing's display face — that
-            promotion is the whole look, and it is fully editable.
+            {PRESET_IDS.length} font pairings, drawn by the real renderer. One word
+            per screen is promoted to the pairing&rsquo;s display face &mdash; that
+            promotion is the whole look, and every part of it is editable.
           </p>
         </div>
-        <Link className="btn-primary" to="/new">
+        <Link className="btn-primary shrink-0" to="/new">
           Try it on a video
         </Link>
       </header>
 
-      <div className="mb-6 flex flex-wrap gap-1.5">
+      <div className="mb-4 flex flex-wrap gap-1.5">
         {SAMPLES.map((text, index) => (
           <button
             key={text}
             onClick={() => setSampleIndex(index)}
             className={cn(
-              'max-w-[280px] truncate rounded border px-2.5 py-1.5 text-[11px] transition',
+              'min-w-0 max-w-full shrink truncate rounded border px-2.5 py-1.5 text-[11px] transition sm:max-w-[260px]',
               index === sampleIndex
                 ? 'border-accent bg-accent/15 text-accent-soft'
                 : 'border-ink-700 bg-ink-850 text-ink-400 hover:border-ink-500',
             )}
           >
-            “{text}”
+            &ldquo;{text}&rdquo;
           </button>
         ))}
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+      <div className="mb-5 flex gap-1.5 overflow-x-auto pb-1">
+        <TagChip active={!tag} onClick={() => setTag(null)}>
+          All {PRESET_IDS.length}
+        </TagChip>
+        {PRESET_TAGS.map((t) => (
+          <TagChip key={t} active={tag === t} onClick={() => setTag(tag === t ? null : t)}>
+            {t}
+          </TagChip>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 lg:grid-cols-4">
         {states.map(({ presetId, state }, index) => (
           <PresetPreview
             key={presetId}
             presetId={presetId}
             state={state}
-            backdrop={BACKDROPS[index % BACKDROPS.length]}
+            backdrop={BACKDROPS[(page * PAGE_SIZE + index) % BACKDROPS.length]}
           />
         ))}
       </div>
+
+      {pageCount > 1 && (
+        <nav className="mt-6 flex items-center justify-center gap-3">
+          <button
+            className="btn-outline"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            Previous
+          </button>
+          <span className="text-xs tabular-nums text-ink-500">
+            {page + 1} / {pageCount}
+          </span>
+          <button
+            className="btn-outline"
+            disabled={page >= pageCount - 1}
+            onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+          >
+            Next
+          </button>
+        </nav>
+      )}
     </div>
+  );
+}
+
+function TagChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-[11px] transition',
+        active
+          ? 'border-accent bg-accent/15 text-accent-soft'
+          : 'border-ink-700 text-ink-400 hover:border-ink-500 hover:text-ink-200',
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -166,6 +252,9 @@ function PresetPreview({
     };
   }, [state, sceneIndex, scenes]);
 
+  const hero = getFont(preset.voices.hero.fontId);
+  const base = getFont(preset.voices.base.fontId);
+
   return (
     <figure className="overflow-hidden rounded-lg border border-ink-800 bg-ink-900">
       <div className="relative aspect-[9/16]" style={{ background: backdrop }}>
@@ -181,7 +270,7 @@ function PresetPreview({
                 key={scene.id}
                 onClick={() => setSceneIndex(i)}
                 className={cn(
-                  'h-1.5 w-1.5 rounded-full transition',
+                  'h-2 w-2 rounded-full transition',
                   i === sceneIndex ? 'bg-accent' : 'bg-ink-700 hover:bg-ink-500',
                 )}
                 aria-label={`Scene ${i + 1}`}
@@ -189,8 +278,8 @@ function PresetPreview({
             ))}
           </div>
         </div>
-        <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-ink-600">
-          {preset.description}
+        <p className="mt-1 truncate text-[10px] text-ink-600">
+          {base.family} + {hero.family}
         </p>
       </figcaption>
     </figure>

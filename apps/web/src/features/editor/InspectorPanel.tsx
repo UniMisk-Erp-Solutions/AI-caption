@@ -1,7 +1,5 @@
 import {
   ANIMATION_IDS,
-  FONT_IDS,
-  FONT_REGISTRY,
   fontFamilyStack,
   getAnimation,
   getFont,
@@ -9,13 +7,17 @@ import {
   resolveWeight,
   type CaptionLayer,
   type Emphasis,
+  type FontId,
   type TextRun,
+  type TextTransform,
 } from '@kc/shared';
 import { useState } from 'react';
+import { ColorPicker } from '../../components/ColorPicker';
+import { FontPicker } from '../../components/FontPicker';
 import {
-  ColorSwatches,
   EmptyState,
   Field,
+  Modal,
   NumberField,
   Section,
   SegmentedControl,
@@ -30,16 +32,16 @@ import { useActiveScene, useEditorStore, useSelectedLayer } from '../../stores/e
 /**
  * The inspector.
  *
- * Two levels of editing, and the split matters:
+ * Two levels of editing, and the split is the point:
  *
- *   WORD level  - which face, size and emphasis each word carries. This is
- *                 where the pairing actually lives, so it comes first and gets
- *                 the most direct controls.
- *   BLOCK level - position, rotation, alignment, timing, animation for the
- *                 whole line.
+ *   WORD   which face, size, case, colour and opacity each word carries. This
+ *          is where the pairing lives, so it comes first and gets the most
+ *          direct controls.
+ *   BLOCK  position, rotation, alignment, spacing, timing and motion for the
+ *          whole line.
  *
- * Most caption tools only expose the block level, which is exactly why their
- * output looks like subtitles rather than typography.
+ * Most caption tools expose only the block level, which is exactly why their
+ * output reads as subtitles rather than typography.
  */
 
 export function InspectorPanel() {
@@ -55,7 +57,7 @@ export function InspectorPanel() {
       <div className="flex h-full items-center">
         <EmptyState
           title="Nothing selected"
-          description="Click any caption on the canvas to edit its words, fonts and motion. Double-click to retype it."
+          description="Tap any caption on the canvas to edit its words, fonts, colour and motion. Double-tap to retype it."
           action={
             scene ? (
               <button
@@ -72,7 +74,7 @@ export function InspectorPanel() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
+    <div className="flex h-full flex-col overflow-y-auto overscroll-contain pb-24 lg:pb-0">
       <WordsSection layer={layer} sceneId={selection.sceneId} />
       <BlockSection layer={layer} />
       <MotionSection layer={layer} />
@@ -82,35 +84,48 @@ export function InspectorPanel() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Word-level                                                          */
+/* Word level                                                          */
 /* ------------------------------------------------------------------ */
 
 function WordsSection({ layer, sceneId }: { layer: CaptionLayer; sceneId: string | null }) {
   const [openRunId, setOpenRunId] = useState<string | null>(null);
-  const setRunEmphasis = useEditorStore((s) => s.setRunEmphasis);
   const splitRunAtWord = useEditorStore((s) => s.splitRunAtWord);
+  const mergeRuns = useEditorStore((s) => s.mergeRuns);
 
   return (
-    <Section title="Words">
+    <Section
+      title="Words"
+      action={
+        layer.runs.length > 1 ? (
+          <button
+            className="text-[10px] text-ink-500 hover:text-accent"
+            onClick={() => mergeRuns(layer.id)}
+            title="Recombine runs that share a style"
+          >
+            tidy
+          </button>
+        ) : undefined
+      }
+    >
       <p className="mb-3 text-[11px] leading-relaxed text-ink-500">
-        Tap a word to change how it is set. One hero word per screen is what
-        makes the pairing read.
+        Tap a word to style it on its own. One hero word per screen is what makes
+        the pairing read.
       </p>
 
-      <div className="flex flex-wrap gap-1.5">
+      <div className="mb-3 flex flex-wrap gap-1.5">
         {layer.runs.map((run) => {
           const words = run.text.split(/\s+/).filter(Boolean);
           return words.map((word, wordIndex) => (
             <button
               key={`${run.id}-${wordIndex}`}
               onClick={() => {
-                // A word inside a multi-word run has to be split out before it
-                // can carry its own style.
+                // A word inside a multi-word run must be split out before it can
+                // carry its own style.
                 if (words.length > 1) splitRunAtWord(layer.id, run.id, wordIndex);
                 else setOpenRunId(openRunId === run.id ? null : run.id);
               }}
               className={cn(
-                'rounded border px-2 py-1 text-sm leading-tight transition',
+                'min-h-[36px] rounded border px-2.5 py-1 text-sm leading-tight transition',
                 run.emphasis === 'hero'
                   ? 'border-accent bg-accent/15 text-accent-soft'
                   : run.emphasis === 'accent'
@@ -126,7 +141,7 @@ function WordsSection({ layer, sceneId }: { layer: CaptionLayer; sceneId: string
         })}
       </div>
 
-      <div className="mt-3 space-y-2">
+      <div className="space-y-2">
         {layer.runs.map((run) => (
           <RunEditor
             key={run.id}
@@ -134,7 +149,6 @@ function WordsSection({ layer, sceneId }: { layer: CaptionLayer; sceneId: string
             run={run}
             open={openRunId === run.id}
             onToggle={() => setOpenRunId(openRunId === run.id ? null : run.id)}
-            onEmphasis={(emphasis) => setRunEmphasis(layer.id, run.id, emphasis)}
           />
         ))}
       </div>
@@ -158,9 +172,16 @@ function WordsSection({ layer, sceneId }: { layer: CaptionLayer; sceneId: string
 
 const EMPHASIS_OPTIONS: Array<{ value: Emphasis; label: string; title: string }> = [
   { value: 'base', label: 'Base', title: 'The sentence voice' },
-  { value: 'hero', label: 'Hero', title: 'The big script/display word' },
+  { value: 'hero', label: 'Hero', title: 'The big script or display word' },
   { value: 'accent', label: 'Accent', title: 'Secondary emphasis' },
   { value: 'micro', label: 'Micro', title: 'Tiny label text' },
+];
+
+const CASE_OPTIONS: Array<{ value: TextTransform; label: string }> = [
+  { value: 'none', label: 'As-is' },
+  { value: 'lowercase', label: 'lower' },
+  { value: 'title', label: 'Title' },
+  { value: 'uppercase', label: 'UPPER' },
 ];
 
 function RunEditor({
@@ -168,22 +189,29 @@ function RunEditor({
   run,
   open,
   onToggle,
-  onEmphasis,
 }: {
   layer: CaptionLayer;
   run: TextRun;
   open: boolean;
   onToggle: () => void;
-  onEmphasis: (emphasis: Emphasis) => void;
 }) {
   const updateRun = useEditorStore((s) => s.updateRun);
-  const state = useEditorStore((s) => s.state);
+  const setRunCase = useEditorStore((s) => s.setRunCase);
+  const setRunText = useEditorStore((s) => s.setRunText);
+  const setRunEmphasis = useEditorStore((s) => s.setRunEmphasis);
+  const palette = useEditorStore((s) => s.state?.design.direction.palette ?? ['#FFFFFF']);
+
+  const [fontOpen, setFontOpen] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
   const font = getFont(run.fontId);
+
+  // Pair against whichever run this one is not, so suggestions are meaningful.
+  const counterpart = layer.runs.find((r) => r.id !== run.id && r.emphasis !== run.emphasis);
 
   return (
     <div className="rounded-md border border-ink-800 bg-ink-850/60">
       <button
-        className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left"
+        className="flex min-h-[44px] w-full items-center justify-between gap-2 px-2.5 py-2 text-left"
         onClick={onToggle}
       >
         <span className="truncate text-sm" style={{ fontFamily: fontFamilyStack(run.fontId) }}>
@@ -200,23 +228,40 @@ function RunEditor({
       </button>
 
       {open && (
-        <div className="space-y-3 border-t border-ink-800 px-2.5 py-3">
-          <SegmentedControl value={run.emphasis} onChange={onEmphasis} options={EMPHASIS_OPTIONS} />
+        <div className="space-y-3.5 border-t border-ink-800 px-2.5 py-3">
+          <Field label="Text">
+            <input
+              className="field"
+              value={draft ?? run.text}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => {
+                if (draft !== null && draft.trim()) setRunText(layer.id, run.id, draft);
+                setDraft(null);
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+            />
+          </Field>
+
+          <Field label="Role" hint="Switching voice reapplies the preset's whole treatment.">
+            <SegmentedControl
+              value={run.emphasis}
+              onChange={(emphasis) => setRunEmphasis(layer.id, run.id, emphasis)}
+              options={EMPHASIS_OPTIONS}
+            />
+          </Field>
 
           <Field label="Font">
-            <Select
-              value={run.fontId}
-              onChange={(fontId) =>
-                updateRun(layer.id, run.id, {
-                  fontId,
-                  fontWeight: resolveWeight(fontId, run.fontWeight),
-                  // A face without an italic must not stay flagged italic, or
-                  // the browser synthesises a slanted fake.
-                  italic: run.italic && getFont(fontId).italic,
-                })
-              }
-              options={FONT_IDS.map((id) => ({ value: id, label: FONT_REGISTRY[id].family }))}
-            />
+            <button
+              className="flex min-h-[44px] w-full items-center justify-between rounded-md border border-ink-700 bg-ink-850 px-2.5 py-2 text-left transition hover:border-ink-600"
+              onClick={() => setFontOpen(true)}
+            >
+              <span className="truncate text-lg leading-none" style={{ fontFamily: fontFamilyStack(run.fontId) }}>
+                {font.family}
+              </span>
+              <span className="ml-2 shrink-0 text-[10px] uppercase tracking-wider text-ink-500">
+                {font.role}
+              </span>
+            </button>
           </Field>
 
           <Field label="Weight">
@@ -227,22 +272,30 @@ function RunEditor({
             />
           </Field>
 
+          <Field label="Case">
+            <SegmentedControl
+              value={run.textTransform}
+              onChange={(mode) => setRunCase(layer.id, run.id, mode)}
+              options={CASE_OPTIONS}
+            />
+          </Field>
+
           <Slider
             label="Size"
             value={run.sizeScale}
-            onChange={(v) => updateRun(layer.id, run.id, { sizeScale: v })}
+            onChange={(sizeScale) => updateRun(layer.id, run.id, { sizeScale })}
             min={0.2}
             max={3.5}
             step={0.05}
-            format={(v) => `${v.toFixed(2)}x`}
+            format={(v) => `${v.toFixed(2)}×`}
           />
 
           <Slider
-            label="Tracking"
+            label="Letter spacing"
             value={run.letterSpacing}
-            onChange={(v) => updateRun(layer.id, run.id, { letterSpacing: v })}
+            onChange={(letterSpacing) => updateRun(layer.id, run.id, { letterSpacing })}
             min={-0.1}
-            max={0.5}
+            max={0.6}
             step={0.005}
             format={(v) => `${v.toFixed(3)}em`}
           />
@@ -250,11 +303,18 @@ function RunEditor({
           <Slider
             label="Baseline"
             value={run.baselineShift}
-            onChange={(v) => updateRun(layer.id, run.id, { baselineShift: v })}
+            onChange={(baselineShift) => updateRun(layer.id, run.id, { baselineShift })}
             min={-0.6}
             max={0.6}
             step={0.01}
             format={(v) => `${v.toFixed(2)}em`}
+          />
+
+          <Slider
+            label="Opacity"
+            value={run.opacity}
+            onChange={(opacity) => updateRun(layer.id, run.id, { opacity })}
+            format={(v) => `${Math.round(v * 100)}%`}
           />
 
           {font.italic && (
@@ -266,50 +326,63 @@ function RunEditor({
           )}
 
           <Field label="Colour">
-            <ColorSwatches
+            <ColorPicker
               value={run.color}
-              palette={state?.design.direction.palette ?? ['#FFFFFF']}
+              palette={palette}
               onChange={(color) => updateRun(layer.id, run.id, { color })}
             />
           </Field>
         </div>
       )}
+
+      <Modal open={fontOpen} onClose={() => setFontOpen(false)} title="Choose a font" width="max-w-md">
+        <div className="h-[65vh] max-h-[560px]">
+          <FontPicker
+            value={run.fontId}
+            pairWith={counterpart?.fontId}
+            onClose={() => setFontOpen(false)}
+            onChange={(fontId: FontId) =>
+              updateRun(layer.id, run.id, {
+                fontId,
+                fontWeight: resolveWeight(fontId, run.fontWeight),
+                // A face without an italic must not stay flagged italic, or the
+                // browser synthesises a slanted fake.
+                italic: run.italic && getFont(fontId).italic,
+              })
+            }
+          />
+        </div>
+      </Modal>
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* Block-level                                                         */
+/* Block level                                                         */
 /* ------------------------------------------------------------------ */
 
 function BlockSection({ layer }: { layer: CaptionLayer }) {
   const updateLayer = useEditorStore((s) => s.updateLayer);
-  const state = useEditorStore((s) => s.state);
-  const frameH = state?.project.height ?? 1920;
+  const frameH = useEditorStore((s) => s.state?.project.height ?? 1920);
+  const palette = useEditorStore((s) => s.state?.design.direction.palette ?? ['#FFFFFF']);
+
+  const bg = layer.background;
 
   return (
     <Section title="Block">
-      <div className="space-y-2.5">
+      <div className="space-y-3">
         <div className="grid grid-cols-2 gap-2">
           <NumberField
             label="X"
             value={layer.x * 100}
             onChange={(v) => updateLayer(layer.id, { x: v / 100 })}
-            min={-10}
-            max={110}
-            step={0.5}
-            precision={1}
-            suffix="%"
+            min={-10} max={110} step={0.5} precision={1} suffix="%"
           />
           <NumberField
             label="Y"
             value={layer.y * 100}
             onChange={(v) => updateLayer(layer.id, { y: v / 100 })}
-            min={-10}
-            max={110}
-            step={0.5}
-            precision={1}
-            suffix="%"
+            min={-10} max={110} step={0.5} precision={1} suffix="%"
           />
         </div>
 
@@ -317,20 +390,14 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
           label="Size"
           value={layer.fontSize * frameH}
           onChange={(v) => updateLayer(layer.id, { fontSize: v / frameH })}
-          min={12}
-          max={frameH * 0.3}
-          step={1}
-          suffix="px"
+          min={10} max={frameH * 0.3} step={1} suffix="px"
         />
 
         <NumberField
           label="Rotate"
           value={layer.rotation}
           onChange={(rotation) => updateLayer(layer.id, { rotation })}
-          min={-180}
-          max={180}
-          step={1}
-          suffix="°"
+          min={-180} max={180} step={1} suffix="°"
         />
 
         <Field label="Align">
@@ -346,21 +413,18 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
         </Field>
 
         <Slider
-          label="Line height"
+          label="Line spacing"
           value={layer.lineHeight}
           onChange={(lineHeight) => updateLayer(layer.id, { lineHeight })}
-          min={0.6}
-          max={2}
-          step={0.02}
+          min={0.55} max={2.2} step={0.01}
+          format={(v) => (v < 1 ? `${v.toFixed(2)} (tight)` : v.toFixed(2))}
         />
 
         <Slider
           label="Wrap width"
           value={layer.maxWidth}
           onChange={(maxWidth) => updateLayer(layer.id, { maxWidth })}
-          min={0.15}
-          max={1}
-          step={0.01}
+          min={0.15} max={1} step={0.01}
           format={(v) => `${Math.round(v * 100)}%`}
         />
 
@@ -377,6 +441,52 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
           onChange={(opacity) => updateLayer(layer.id, { opacity })}
           format={(v) => `${Math.round(v * 100)}%`}
         />
+
+        {/* A scrim is the honest answer when the footage behind is too busy for
+            a shadow to rescue - it is what a designer would reach for. */}
+        <Toggle
+          label="Backing plate"
+          checked={Boolean(bg)}
+          onChange={(on) =>
+            updateLayer(layer.id, {
+              background: on
+                ? { color: '#000000', opacity: 0.35, paddingX: 0.35, paddingY: 0.22, radius: 0.12 }
+                : null,
+            })
+          }
+        />
+
+        {bg && (
+          <div className="space-y-3 rounded-md border border-ink-800 bg-ink-850/60 p-2.5">
+            <Slider
+              label="Plate opacity"
+              value={bg.opacity}
+              onChange={(opacity) => updateLayer(layer.id, { background: { ...bg, opacity } })}
+              format={(v) => `${Math.round(v * 100)}%`}
+            />
+            <Slider
+              label="Padding"
+              value={bg.paddingX}
+              onChange={(paddingX) =>
+                updateLayer(layer.id, { background: { ...bg, paddingX, paddingY: paddingX * 0.65 } })
+              }
+              min={0} max={1} step={0.02}
+            />
+            <Slider
+              label="Corner"
+              value={bg.radius}
+              onChange={(radius) => updateLayer(layer.id, { background: { ...bg, radius } })}
+              min={0} max={0.5} step={0.01}
+            />
+            <Field label="Plate colour">
+              <ColorPicker
+                value={bg.color}
+                palette={['#000000', '#FFFFFF', ...palette]}
+                onChange={(color) => updateLayer(layer.id, { background: { ...bg, color } })}
+              />
+            </Field>
+          </div>
+        )}
       </div>
     </Section>
   );
@@ -391,7 +501,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
   const setTime = useEditorStore((s) => s.setTime);
   const duration = useEditorStore((s) => s.state?.project.durationMs ?? 0);
 
-  const animationOptions = ANIMATION_IDS.map((id) => ({ value: id, label: getAnimation(id).label }));
+  const options = ANIMATION_IDS.map((id) => ({ value: id, label: getAnimation(id).label }));
 
   return (
     <Section title="Motion">
@@ -405,7 +515,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
                 enterDurationMs: getAnimation(enterAnimation).defaultMs,
               })
             }
-            options={animationOptions}
+            options={options}
           />
         </Field>
 
@@ -413,10 +523,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
           label="In time"
           value={layer.enterDurationMs}
           onChange={(enterDurationMs) => updateLayer(layer.id, { enterDurationMs })}
-          min={0}
-          max={4000}
-          step={20}
-          suffix="ms"
+          min={0} max={4000} step={20} suffix="ms"
         />
 
         <Field label="Out">
@@ -428,7 +535,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
                 exitDurationMs: getAnimation(exitAnimation).defaultMs,
               })
             }
-            options={animationOptions}
+            options={options}
           />
         </Field>
 
@@ -436,34 +543,21 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
           label="Out time"
           value={layer.exitDurationMs}
           onChange={(exitDurationMs) => updateLayer(layer.id, { exitDurationMs })}
-          min={0}
-          max={4000}
-          step={20}
-          suffix="ms"
+          min={0} max={4000} step={20} suffix="ms"
         />
 
         <div className="grid grid-cols-2 gap-2 border-t border-ink-800 pt-3">
           <NumberField
             label="Start"
             value={layer.startMs}
-            onChange={(startMs) =>
-              updateLayer(layer.id, { startMs: Math.min(startMs, layer.endMs - 100) })
-            }
-            min={0}
-            max={duration}
-            step={10}
-            suffix="ms"
+            onChange={(startMs) => updateLayer(layer.id, { startMs: Math.min(startMs, layer.endMs - 100) })}
+            min={0} max={duration} step={10} suffix="ms"
           />
           <NumberField
             label="End"
             value={layer.endMs}
-            onChange={(endMs) =>
-              updateLayer(layer.id, { endMs: Math.max(endMs, layer.startMs + 100) })
-            }
-            min={0}
-            max={duration}
-            step={10}
-            suffix="ms"
+            onChange={(endMs) => updateLayer(layer.id, { endMs: Math.max(endMs, layer.startMs + 100) })}
+            min={0} max={duration} step={10} suffix="ms"
           />
         </div>
 
@@ -478,10 +572,27 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
 function LayerActions({ layer }: { layer: CaptionLayer }) {
   const duplicateLayer = useEditorStore((s) => s.duplicateLayer);
   const deleteLayer = useEditorStore((s) => s.deleteLayer);
+  const updateLayer = useEditorStore((s) => s.updateLayer);
 
   return (
     <Section title="Layer">
       <div className="mb-3 truncate text-[11px] text-ink-500">{layerText(layer)}</div>
+
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <NumberField
+          label="Layer"
+          value={layer.zIndex}
+          onChange={(zIndex) => updateLayer(layer.id, { zIndex })}
+          min={0} max={99} step={1}
+        />
+        <button
+          className="btn-outline"
+          onClick={() => updateLayer(layer.id, { zIndex: layer.zIndex + 1 })}
+        >
+          Bring forward
+        </button>
+      </div>
+
       <div className="flex gap-2">
         <button className="btn-outline flex-1" onClick={() => duplicateLayer(layer.id)}>
           Duplicate

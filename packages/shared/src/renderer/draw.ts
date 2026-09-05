@@ -362,7 +362,7 @@ export function drawLayer(
           })
         : block;
 
-      const alpha = state.opacity * layer.opacity * globalOpacity;
+      const alpha = state.opacity * layer.opacity * token.run.opacity * globalOpacity;
       if (alpha <= 0.001) continue;
 
       const spacingPx = token.run.letterSpacing * token.size + (perWord ? 0 : block.tracking * token.size);

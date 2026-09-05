@@ -265,14 +265,29 @@ buttons under "AI" touch the network.
 
 Two levels, and the split is the point:
 
-- **Word level** — tap any word to change its face, size, tracking, baseline or
-  promote it to hero. This is where the pairing lives.
-- **Block level** — position, rotation, alignment, timing, animation, wrap width.
+- **Word level** — text, font (searchable across all 144, with pairing
+  suggestions), weight, size, case, letter spacing, baseline shift, italic,
+  opacity, and colour via a full HSV picker with palette swatches and an
+  eyedropper that samples the frame.
+- **Block level** — position, rotation, alignment, line spacing, wrap width,
+  shadow, opacity, z-order, an optional backing plate, plus entry/exit
+  animation and timing.
+
+Case changes are lossless: each run keeps its `rawText`, so UPPERCASE → Title
+round-trips exactly rather than guessing where "New York" had capitals.
 
 Drag to move (snaps to thirds), corner handle to resize, top handle to rotate,
 double-click to retype. In the transcript panel, hover a word and press ★ to make
 it the hero of its scene — the fastest fix when the design emphasised the wrong
 word.
+
+### Mobile
+
+The editor is a three-column desktop layout and a single-column mobile one. Below
+`lg`, the panels become a bottom sheet driven by a tab bar (Style / Text / Words)
+that covers at most 70% of the viewport, so the canvas stays visible while you
+edit. Touch targets are 40 px minimum on coarse pointers, and every drag uses
+pointer events, so it behaves the same with a finger as with a mouse.
 
 | | |
 | --- | --- |
@@ -391,6 +406,23 @@ Verified against `test.mp4` (12.1s, 960×720, H.264/AAC):
   **Knew**, **Falling**, all set in Style Script
 - export: 12.12s H.264 960×720 with AAC stereo audio intact
 - Immich: 1,139,682 bytes round-tripped byte-identical, Range → HTTP 206
+
+## Deploying to Vercel
+
+`vercel.json` is set up for the monorepo: `pnpm build` at the root, output at
+`apps/web/dist`, SPA rewrites, and immutable caching for hashed assets.
+
+Import the repo, then set three environment variables in Project Settings (or
+leave them unset for a local-mode demo with no accounts and no AI):
+
+```
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+VITE_API_BASE_URL     # your deployed Worker
+```
+
+The Worker deploys separately with `wrangler deploy`; add the Vercel domain to
+its `ALLOWED_ORIGIN`.
 
 ## Commands
 

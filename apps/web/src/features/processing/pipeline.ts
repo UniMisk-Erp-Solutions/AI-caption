@@ -5,6 +5,7 @@ import {
   editorStateSchema,
   estimateTimings,
   expandAiDesign,
+  choosePreset,
   getPreset,
   groupIntoScenes,
   reconcileTranscript,
@@ -66,8 +67,12 @@ export interface PipelineInput {
   mode: 'auto' | 'speech' | 'song';
   /** Optional exact words, which become the text authority when present. */
   userTranscript?: string;
-  /** 'AUTO' lets the model pick. */
-  style: PresetId | 'AUTO';
+  /**
+   * Normally omitted: the look is chosen from the footage and the words. Only
+   * set when the user has explicitly picked one in the editor and is
+   * regenerating.
+   */
+  style?: PresetId;
 }
 
 export interface PipelineResult {
@@ -241,8 +246,23 @@ export async function runPipeline(
   throwIfAborted();
 
   /* -------------------------------------------------- direction ---- */
+
+  // Chosen here rather than asked of the user. Nobody can pick sensibly from
+  // 135 pairings for footage they have not watched yet, and every option is a
+  // chance to choose badly. This reads the words, the mood and the measured
+  // shot mix, and the user restyles in one click afterwards with the result
+  // actually visible.
   const presetId: PresetId =
-    input.style === 'AUTO' ? presetForContent(contentType, input.media) : input.style;
+    input.style ??
+    choosePreset({
+      contentType,
+      mood,
+      text: words.map((w) => w.text).join(' '),
+      aspect: input.media.width / Math.max(1, input.media.height),
+      // Frame measurement has not run yet, so this pass only sees the words.
+      // The shot mix refines it below, once there is something to measure.
+      seed: hashSeed(input.projectId),
+    });
   const preset = getPreset(presetId);
 
   const direction: ArtDirection = artDirectionSchema.parse({
@@ -305,6 +325,26 @@ export async function runPipeline(
 
   throwIfAborted();
 
+  /* ---- refine the look now that the shot mix is measured ---- */
+  if (!input.style && frameMaps.size > 0) {
+    const refined = choosePreset({
+      contentType,
+      mood,
+      text: words.map((w) => w.text).join(' '),
+      shots: [...frameMaps.values()].map((m) => m.shot),
+      aspect: input.media.width / Math.max(1, input.media.height),
+      luma: mean([...frameMaps.values()].map((m) => average(m.luma))),
+      seed: hashSeed(input.projectId),
+    });
+    if (refined !== direction.preset) {
+      const next = getPreset(refined);
+      direction.preset = refined;
+      direction.palette = next.palette;
+      direction.motionLevel = next.motionLevel;
+      direction.rotationLevel = next.rotationBudget;
+    }
+  }
+
   /* -------------------------------------------------- design ------- */
   tracker.set('design', { status: 'active' });
 
@@ -320,7 +360,7 @@ export async function runPipeline(
         {
           projectId: input.projectId,
           dimensions: dims,
-          style: input.style,
+          style: direction.preset,
           contentType,
           mood,
           scenes: groups.map((group) => ({
@@ -400,14 +440,6 @@ export async function runPipeline(
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-/** Match the default look to what we heard, when the user did not choose. */
-function presetForContent(contentType: ContentType, media: MediaInfo): PresetId {
-  const portrait = media.height >= media.width;
-  if (contentType === 'song') return portrait ? 'SCRIPT_EDITORIAL' : 'CINEMATIC';
-  if (contentType === 'instrumental') return 'CINEMATIC';
-  return 'SCRIPT_EDITORIAL';
-}
-
 function sampleEvenly<T>(items: T[], max: number): T[] {
   if (items.length <= max) return items;
   const step = items.length / max;
@@ -426,6 +458,24 @@ async function retry<T>(fn: () => Promise<T>, attempts: number): Promise<T> {
     }
   }
   throw lastError;
+}
+
+/** Stable numeric seed from a project id, so a look is reproducible. */
+function hashSeed(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return h % 100000;
+}
+
+function mean(values: number[]): number {
+  return values.length === 0 ? 0.5 : values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function average(values: Float32Array): number {
+  if (values.length === 0) return 0.5;
+  let sum = 0;
+  for (const v of values) sum += v;
+  return sum / values.length;
 }
 
 /** "2 closeup, 1 wide" - a readable summary of the shot mix. */

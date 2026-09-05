@@ -89,6 +89,15 @@ export const textRunSchema = z.object({
   /** Vertical nudge in em - lets a script sit optically level with a sans. */
   baselineShift: z.number().min(-1.5).max(1.5).default(0),
   color: colorSchema.default('#FFFFFF'),
+  /** Per-run opacity, multiplied with the layer's. */
+  opacity: z.number().min(0).max(1).default(1),
+  /**
+   * The words before any case transform, so case can be changed back and forth
+   * without losing information. Rebuilt from the transcript when absent.
+   */
+  rawText: z.string().default(''),
+  /** Case currently applied to `rawText` to produce `text`. */
+  textTransform: textTransformSchema.default('none'),
   /**
    * Negative tracking applied only where this run meets its neighbours, in em.
    * Lets a script swash tuck under the word beside it the way it would if a
