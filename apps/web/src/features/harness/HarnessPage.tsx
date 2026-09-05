@@ -33,6 +33,32 @@ import { runPipeline, type StepState } from '../processing/pipeline';
 
 const BRIDGE = 'http://localhost:5299';
 
+/**
+ * Credentials for the harness's own test account.
+ *
+ * Read from the environment rather than hardcoded: this is a real login against
+ * a real Supabase project, and a password committed to a repository is a
+ * password that has to be rotated. Create the user once with the Supabase admin
+ * API, then put these in `apps/web/.env.local`.
+ */
+const TEST_EMAIL = import.meta.env.VITE_HARNESS_EMAIL ?? '';
+const TEST_PASSWORD = import.meta.env.VITE_HARNESS_PASSWORD ?? '';
+
+async function signInAsHarnessUser() {
+  if (!supabase) throw new Error('Supabase is not configured in this build.');
+  if (!TEST_EMAIL || !TEST_PASSWORD) {
+    throw new Error(
+      'Set VITE_HARNESS_EMAIL and VITE_HARNESS_PASSWORD in apps/web/.env.local to run the harness.',
+    );
+  }
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: TEST_EMAIL,
+    password: TEST_PASSWORD,
+  });
+  if (error) throw new Error(`sign-in failed: ${error.message}`);
+  return { auth: data, client: supabase };
+}
+
 type Status = 'idle' | 'running' | 'done' | 'failed';
 
 interface LogLine {
@@ -64,14 +90,7 @@ export function HarnessPage() {
       /* ---------------------------------------------- preflight ---- */
       const health = await apiHealth();
       say(`worker ok · models: ${JSON.stringify((health as { models?: unknown }).models)}`, 'ok');
-
-      if (!supabase) throw new Error('Supabase is not configured in this build.');
-
-      const { data: auth, error: authError } = await supabase.auth.signInWithPassword({
-        email: 'harness@example.invalid',
-        password: 'REDACTED-SEE-ENV',
-      });
-      if (authError) throw new Error(`sign-in failed: ${authError.message}`);
+      const { auth, client } = await signInAsHarnessUser();
       const userId = auth.user!.id;
       say(`signed in as ${userId}`, 'ok');
 
@@ -90,7 +109,7 @@ export function HarnessPage() {
 
       /* ---------------------------------------------- project ------ */
       const projectId = crypto.randomUUID();
-      const { error: insertError } = await supabase.from('projects').insert({
+      const { error: insertError } = await client.from('projects').insert({
         id: projectId,
         user_id: userId,
         title: 'Harness run',
@@ -227,20 +246,14 @@ export function HarnessPage() {
     try {
       const health = (await apiHealth()) as { storage?: Record<string, unknown> };
       say(`storage: ${JSON.stringify(health.storage)}`, 'ok');
-
-      if (!supabase) throw new Error('Supabase is not configured.');
-      const { data: auth, error: authError } = await supabase.auth.signInWithPassword({
-        email: 'harness@example.invalid',
-        password: 'REDACTED-SEE-ENV',
-      });
-      if (authError) throw new Error(`sign-in failed: ${authError.message}`);
+      const { auth, client } = await signInAsHarnessUser();
       say(`signed in as ${auth.user!.id}`, 'ok');
 
       const file = await (await fetch(`${BRIDGE}/test.mp4`)).blob();
       const media = await probeMedia(file);
 
       const projectId = crypto.randomUUID();
-      const { error: insertError } = await supabase.from('projects').insert({
+      const { error: insertError } = await client.from('projects').insert({
         id: projectId,
         user_id: auth.user!.id,
         title: 'Storage test',
