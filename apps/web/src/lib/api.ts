@@ -210,12 +210,14 @@ export async function completeUpload(input: {
 export async function transcribeAudio(
   projectId: string,
   audio: Blob,
-  options: { mode: 'auto' | 'speech' | 'song'; language?: string },
+  options: { mode: 'auto' | 'speech' | 'song'; language?: string; durationMs?: number },
   signal?: AbortSignal,
 ): Promise<TranscriptionResult> {
   const form = new FormData();
   form.append('projectId', projectId);
   form.append('mode', options.mode);
+  // Lets the server reject a transcript that stops short of the audio.
+  if (options.durationMs) form.append('durationMs', String(Math.round(options.durationMs)));
   if (options.language) form.append('language', options.language);
   form.append('audio', audio, 'audio.wav');
 

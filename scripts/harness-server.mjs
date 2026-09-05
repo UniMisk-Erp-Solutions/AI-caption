@@ -33,15 +33,25 @@ const server = createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  /* ---- serve the source clip ---- */
-  if (req.method === 'GET' && url.pathname === '/test.mp4') {
-    const path = resolve(root, 'test.mp4');
+  /* ---- serve repo-root files the harness needs ---- */
+  const SERVE = {
+    '/test.mp4': 'video/mp4',
+    '/result.mp4': 'video/mp4',
+    '/design.json': 'application/json',
+    '/design-before.json': 'application/json',
+  };
+  if (req.method === 'GET' && url.pathname in SERVE) {
+    const path = resolve(root, url.pathname.slice(1));
     if (!existsSync(path)) {
       res.writeHead(404, CORS);
-      return res.end('test.mp4 not found at the repo root');
+      return res.end(`${url.pathname} not found at the repo root`);
     }
     const buf = await readFile(path);
-    res.writeHead(200, { ...CORS, 'Content-Type': 'video/mp4', 'Content-Length': buf.length });
+    res.writeHead(200, {
+      ...CORS,
+      'Content-Type': SERVE[url.pathname],
+      'Content-Length': buf.length,
+    });
     return res.end(buf);
   }
 

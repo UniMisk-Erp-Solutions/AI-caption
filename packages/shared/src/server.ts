@@ -21,4 +21,5 @@ export * from './transcript/align';
 export * from './transcript/scenes';
 export * from './transcript/estimate';
 
+export * from './vision/frameMap';
 export * from './ai/prompt';

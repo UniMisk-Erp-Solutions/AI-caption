@@ -13,12 +13,13 @@ import {
   type ContentType,
   type EditorState,
   type PresetId,
+  type FrameMap,
   type TranscriptWord,
 } from '@kc/shared';
 import { generateDesign, transcribeAudio, analyzeAudio } from '../../lib/api';
 import { hasApi } from '../../lib/env';
 import { extractAudioForTranscription } from '../../media/audio';
-import { extractSceneFrames, releaseFrames } from '../../media/frames';
+import { analyzeScenes, extractSceneFrames, releaseFrames } from '../../media/frames';
 import type { MediaInfo } from '../../media/probe';
 
 /**
@@ -72,6 +73,8 @@ export interface PipelineInput {
 export interface PipelineResult {
   state: EditorState;
   warnings: string[];
+  /** Measured frames, kept so the editor can re-place without re-decoding. */
+  frameMaps: Map<string, FrameMap>;
 }
 
 type Reporter = (steps: StepState[]) => void;
@@ -147,12 +150,28 @@ export async function runPipeline(
       tracker.set('transcribe', { status: 'active' });
       try {
         const result = await retry(
-          () => transcribeAudio(input.projectId, audio!, { mode: input.mode }, signal),
+          () =>
+            transcribeAudio(
+              input.projectId,
+              audio!,
+              { mode: input.mode, durationMs: input.media.durationMs },
+              signal,
+            ),
           1,
         );
         words = repairMonotonicity(result.words);
         language = result.language || 'en';
-        tracker.set('transcribe', { status: 'done', detail: `${words.length} words` });
+
+        const covered = words.length > 0 ? words[words.length - 1].endMs / input.media.durationMs : 0;
+        tracker.set('transcribe', {
+          status: 'done',
+          detail: `${words.length} words · ${Math.round(covered * 100)}% of the audio`,
+        });
+        if (covered < 0.8) {
+          warnings.push(
+            `The transcript only covers ${Math.round(covered * 100)}% of the audio. Check the end of the clip in the transcript panel.`,
+          );
+        }
       } catch (error) {
         tracker.set('transcribe', { status: 'failed', detail: describe(error) });
         warnings.push('Transcription failed. You can paste the words in the transcript panel.');
@@ -236,6 +255,25 @@ export async function runPipeline(
   const groups = groupIntoScenes(words, { targetWords: preset.sceneWordTarget });
 
   /* -------------------------------------------------- frames ------- */
+
+  // Measure the footage ourselves before involving the model at all. This is
+  // cheap, exact and deterministic - unlike asking a language model where the
+  // face is, which returned round numbers and, on one clip, the wrong side of
+  // the frame entirely.
+  let frameMaps = new Map<string, FrameMap>();
+  if (groups.length > 0) {
+    tracker.set('frames', { status: 'active', detail: 'measuring composition' });
+    try {
+      frameMaps = await analyzeScenes(
+        input.file,
+        groups.map((g) => ({ id: g.id, startMs: g.startMs, endMs: g.endMs })),
+        (done, total) => tracker.set('frames', { status: 'active', progress: done / total }),
+      );
+    } catch (error) {
+      tracker.set('frames', { status: 'skipped', detail: describe(error) });
+    }
+  }
+
   let frames: Awaited<ReturnType<typeof extractSceneFrames>> = [];
   const wantFrames = canUseAi && groups.length > 0;
 
@@ -250,12 +288,19 @@ export async function runPipeline(
         sampled.map((g) => ({ sceneId: g.id, timestampMs: g.keyframeTimestampMs })),
         (done, total) => tracker.set('frames', { status: 'active', progress: done / total }),
       );
-      tracker.set('frames', { status: 'done', detail: `${frames.length} keyframes` });
+      const shots = [...frameMaps.values()].map((m) => m.shot);
+      tracker.set('frames', {
+        status: 'done',
+        detail: `${frames.length} keyframes · ${frameMaps.size} measured · ${summarise(shots)}`,
+      });
     } catch (error) {
       tracker.set('frames', { status: 'skipped', detail: describe(error) });
     }
   } else {
-    tracker.set('frames', { status: 'skipped', detail: canUseAi ? 'no scenes' : 'local mode' });
+    tracker.set('frames', {
+      status: frameMaps.size > 0 ? 'done' : 'skipped',
+      detail: frameMaps.size > 0 ? `${frameMaps.size} scenes measured locally` : 'no scenes',
+    });
   }
 
   throwIfAborted();
@@ -266,7 +311,7 @@ export async function runPipeline(
   // Always compute the deterministic design first. It is what we show if the
   // model is slow, unavailable or returns something that fails validation - and
   // because it uses the same composer, it is a real design, not a placeholder.
-  let scenes = autoDesign(words, direction, dims, groups);
+  let scenes = autoDesign(words, direction, dims, groups, frameMaps);
 
   if (canUseAi && groups.length > 0) {
     try {
@@ -305,7 +350,7 @@ export async function runPipeline(
         note: ai.direction.note ?? '',
       });
 
-      scenes = expandAiDesign(ai, aiDirection, { dims, words, groups });
+      scenes = expandAiDesign(ai, aiDirection, { dims, words, groups, frameMaps });
       Object.assign(direction, aiDirection);
 
       tracker.set('design', { status: 'done', detail: `${aiDirection.preset} · ${scenes.length} scenes` });
@@ -348,7 +393,7 @@ export async function runPipeline(
   });
 
   tracker.set('ready', { status: 'done' });
-  return { state, warnings };
+  return { state, warnings, frameMaps };
 }
 
 /* ------------------------------------------------------------------ */
@@ -381,6 +426,13 @@ async function retry<T>(fn: () => Promise<T>, attempts: number): Promise<T> {
     }
   }
   throw lastError;
+}
+
+/** "2 closeup, 1 wide" - a readable summary of the shot mix. */
+function summarise(shots: string[]): string {
+  const counts = new Map<string, number>();
+  for (const shot of shots) counts.set(shot, (counts.get(shot) ?? 0) + 1);
+  return [...counts.entries()].map(([k, n]) => `${n} ${k}`).join(', ');
 }
 
 function describe(error: unknown): string {

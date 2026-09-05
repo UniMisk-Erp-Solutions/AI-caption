@@ -181,6 +181,7 @@ the user turn automatically, on a retry triggered by the error itself.
 | --- | --- |
 | No API configured | Estimated timings from pasted text |
 | A model returns an empty response | Falls through to the next model in the chain |
+| Transcript stops short of the audio | Rejected and retried; the best attempt wins if none is complete |
 | Transcription fails entirely | One retry, then pasted text, then a clear message |
 | Verification fails | Keeps the timed transcript |
 | Gemma fails or returns bad JSON | One repair attempt, then the built-in designer |
@@ -301,6 +302,67 @@ too (a client-side limit is a suggestion).
 During the free beta, audio goes to Google's free Gemini tier, which may use
 requests to improve their products. Don't upload confidential video.
 
+## Placement intelligence
+
+Captions are placed against measurements of the actual frame, not a model's
+guess about it.
+
+The first build asked Gemma where the face and the empty space were. It
+answered with round numbers - `x: 0.20, y: 0.00, w: 0.60, h: 0.80` - because a
+language model cannot measure pixels. On one clip it reported the subject on the
+left when the face was on the right. Meanwhile the solver could only slide the
+block *vertically*, so when a tall figure stood mid-frame there was no position
+in the search space that cleared it, and text landed on the face.
+
+Now the browser measures each scene (`apps/web/src/media/analyze.ts`), in about
+a millisecond and for free:
+
+| Signal | How | Used for |
+| --- | --- | --- |
+| busyness | Sobel edge energy per cell | text over detail is unreadable at any brightness |
+| luminance | per cell, sampled *under each line* | shadow strength; a frame that is bright sky over a black coat has no useful average |
+| skin | YCbCr, flood-filled into blobs | face and subject regions, and it survives animation |
+| shot type | face and subject area | close-up vs medium vs wide vs empty |
+
+Three moments are sampled per scene and merged, so text avoids where the
+subject moves *to*, not only where it was on the keyframe.
+
+`packages/shared/src/layout/place.ts` then searches both axes, scoring every
+candidate on face overlap, subject overlap, busyness, local contrast, safe
+margins, rule-of-thirds affinity, and continuity with the previous scene. Shot
+type gates which compositions are even eligible - a centred stack over a
+close-up portrait is wrong however good the typography is.
+
+Gemma is still asked for the design, but it is now *given* the geometry and
+spends its attention on what it is good at: line breaks and which word matters.
+
+### Measured effect
+
+Controlled A/B on the same transcript, same art direction, no model involved -
+so the only variable is the layout engine (`/harness?relayout=1`):
+
+| Metric | Blind | Measured |
+| --- | --- | --- |
+| Overall | 82% (6/8) | **93% (7/8)** |
+| Text clear of faces | 0.33 - 4/6 layers on a face | **1.00 - zero** |
+| Text on calm areas | 0.34 | **0.55** |
+| Legible contrast | mean 0.60 | **mean 0.71** |
+| Coverage, gaps, continuity, variety | unchanged | unchanged |
+
+`ab-N-blind.png` / `ab-N-measured.png` are the same frames rendered both ways.
+
+## Scorecard
+
+`packages/shared/src/quality/score.ts` turns caption quality into numbers so a
+change can be shown not to regress. Every check exists because it caught a real
+defect: a transcript that stopped at 70% of the audio and reported success; text
+placed across a face; a block teleporting between corners.
+
+```bash
+pnpm --filter @kc/shared exec tsx scripts/score.ts design.json   # text metrics
+# pixel metrics need a browser: /harness?score=1
+```
+
 ## End-to-end harness
 
 Runs the real pipeline against a real clip — no mocks — because the parts most
@@ -312,11 +374,15 @@ pnpm dev
 open http://localhost:5173/harness
 ```
 
-`Full run` does probe → audio → Gemini transcribe → verify → keyframes → Gemma
-design → MP4 export, then writes `result.mp4`, `design.json` and one
-`still-N.png` per scene to the repo root. `Storage only` does an upload →
-album → asset row → signed read → byte-comparison → Range request round trip,
-which is cheap to repeat.
+| Mode | What it does |
+| --- | --- |
+| `?auto=1` | Full run: probe → audio → transcribe → verify → measure → Gemma → MP4 |
+| `?relayout=1` | A/B the layout engine on a fixed transcript. No AI, repeatable |
+| `?score=1` | Score an existing `design.json` against freshly measured frames |
+| `?storage=1` | Upload → album → asset row → signed read → byte compare → Range |
+
+Only the full run spends AI quota; the other three are free and deterministic,
+which is what makes them usable as regression checks.
 
 Verified against `test.mp4` (12.1s, 960×720, H.264/AAC):
 

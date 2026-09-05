@@ -381,15 +381,32 @@ export async function generateWithFallback(
   capability: Capability,
   options: Omit<GenerateOptions, 'model'>,
   isUsable: (text: string) => boolean = (text) => text.trim().length > 0,
-): Promise<{ text: string; model: string }> {
+  /**
+   * Optional quality score, 0..1. When no model clears `isUsable`, the
+   * best-scoring attempt is returned instead of failing outright.
+   *
+   * This matters for transcription: the bar is "covers the whole clip", but a
+   * clip ending in an instrumental outro can never reach it, and returning a
+   * 0.85-coverage transcript is enormously better than returning nothing.
+   */
+  rank?: (text: string) => number,
+): Promise<{ text: string; model: string; degraded: boolean }> {
   const chain = await resolveModelChain(env, capability);
   let lastError: unknown = null;
+  let best: { text: string; model: string; score: number } | null = null;
 
   for (const model of chain) {
     try {
       const text = await generate(env, { ...options, model });
-      if (isUsable(text)) return { text, model };
-      console.warn(`Model ${model} returned nothing usable for ${capability}; trying the next.`);
+
+      if (isUsable(text)) return { text, model, degraded: false };
+
+      const score = rank?.(text) ?? 0;
+      if (score > 0 && (!best || score > best.score)) best = { text, model, score };
+
+      console.warn(
+        `Model ${model} returned nothing usable for ${capability} (score ${score.toFixed(2)}); trying the next.`,
+      );
     } catch (error) {
       // A rate limit will hit every model in the chain, so stop rather than
       // burning the remaining quota on requests that cannot succeed.
@@ -397,6 +414,11 @@ export async function generateWithFallback(
       lastError = error;
       console.warn(`Model ${model} failed for ${capability}:`, (error as Error)?.message);
     }
+  }
+
+  if (best) {
+    console.warn(`Falling back to the best ${capability} attempt (${best.model}, score ${best.score.toFixed(2)}).`);
+    return { text: best.text, model: best.model, degraded: true };
   }
 
   if (lastError instanceof HttpError) throw lastError;

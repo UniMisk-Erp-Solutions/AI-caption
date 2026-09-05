@@ -1,5 +1,6 @@
-import { AI_LIMITS } from '@kc/shared';
+import { AI_LIMITS, mergeFrameMaps, type FrameMap } from '@kc/shared';
 import { CanvasSink } from 'mediabunny';
+import { analyzeFrame } from './analyze';
 import { blobToBase64, canvasToBlob, fitScale, openInput } from './probe';
 
 /**
@@ -113,4 +114,70 @@ function meanLuma(canvas: HTMLCanvasElement | OffscreenCanvas): number {
 /** Release the object URLs held by a frame set. */
 export function releaseFrames(frames: SceneFrame[]): void {
   for (const frame of frames) URL.revokeObjectURL(frame.previewUrl);
+}
+
+/* ------------------------------------------------------------------ */
+/* Scene analysis                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Measure each scene's frames.
+ *
+ * Samples three moments per scene - just after the start, the middle, and just
+ * before the end - and merges them, so placement avoids where the subject moves
+ * *to*, not only where it happened to be on the keyframe. Text that looks well
+ * placed on a still and gets covered two seconds later was one of the clearest
+ * failures in the first build.
+ *
+ * One decode pass serves every sample, because `canvasesAtTimestamps` walks
+ * forwards through the file rather than seeking per frame.
+ */
+export async function analyzeScenes(
+  file: Blob,
+  scenes: Array<{ id: string; startMs: number; endMs: number }>,
+  onProgress?: (done: number, total: number) => void,
+): Promise<Map<string, FrameMap>> {
+  const result = new Map<string, FrameMap>();
+  if (scenes.length === 0) return result;
+
+  const input = await openInput(file);
+  const track = await input.getPrimaryVideoTrack();
+  if (!track) return result;
+
+  const scale = fitScale(track.displayWidth, track.displayHeight, 256);
+  const sink = new CanvasSink(track, {
+    width: Math.max(8, Math.round(track.displayWidth * scale)),
+    height: Math.max(8, Math.round(track.displayHeight * scale)),
+    fit: 'fill',
+    poolSize: 2,
+  });
+
+  // Flatten to one sorted timestamp list so the decoder makes a single pass.
+  const samples: Array<{ sceneId: string; ms: number }> = [];
+  for (const scene of scenes) {
+    const span = Math.max(1, scene.endMs - scene.startMs);
+    for (const fraction of [0.12, 0.5, 0.88]) {
+      samples.push({ sceneId: scene.id, ms: scene.startMs + span * fraction });
+    }
+  }
+  samples.sort((a, b) => a.ms - b.ms);
+
+  const collected = new Map<string, FrameMap[]>();
+  let index = 0;
+
+  for await (const wrapped of sink.canvasesAtTimestamps(samples.map((s) => s.ms / 1000))) {
+    const sample = samples[index++];
+    onProgress?.(index, samples.length);
+    if (!wrapped || !sample) continue;
+
+    const map = analyzeFrame(wrapped.canvas as unknown as CanvasImageSource, sample.ms);
+    const list = collected.get(sample.sceneId) ?? [];
+    list.push(map);
+    collected.set(sample.sceneId, list);
+  }
+
+  for (const [sceneId, maps] of collected) {
+    result.set(sceneId, mergeFrameMaps(maps));
+  }
+  return result;
 }

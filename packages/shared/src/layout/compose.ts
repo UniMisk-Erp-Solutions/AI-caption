@@ -23,6 +23,14 @@ import {
   type TranscriptWord,
 } from '../schemas/editor';
 import { groupIntoScenes, pickHeroIndex, splitIntoLines, type SceneGroup } from '../transcript/scenes';
+import {
+  hexLuma,
+  regionBusyness,
+  regionLuma,
+  regionLumaSpread,
+  type FrameMap,
+} from '../vision/frameMap';
+import { compositionsForShot, shotPolicy, solvePlacement, type PlacedLine } from './place';
 
 /**
  * Composition: turning decisions into placed, sized, timed typography.
@@ -172,6 +180,10 @@ export interface BuildSceneOptions {
   wordsById: Map<string, TranscriptWord>;
   /** Deterministic variation seed - the scene index works well. */
   seed: number;
+  /** What was measured in this scene's frames. Placement is far better with it. */
+  frameMap?: FrameMap | null;
+  /** Where the previous scene's block sat, so the layout does not teleport. */
+  previousAnchor?: { x: number; y: number } | null;
 }
 
 /** Small deterministic hash so "random" choices stay stable across renders. */
@@ -207,7 +219,9 @@ export function buildScene(opts: BuildSceneOptions): CaptionScene {
   // Sizes are authored for 9:16. Wider frames get proportionally smaller type
   // so a line keeps a similar share of the frame's short edge.
   const aspectScale = aspect > 1 ? 0.7 : aspect > 0.72 ? 0.86 : 1;
-  const baseSize = preset.baseSize * opts.direction.scale * aspectScale;
+  // A close-up wants restrained type; an empty landscape can carry it big.
+  const shotScale = shotPolicy(opts.frameMap?.shot).scale;
+  const baseSize = preset.baseSize * opts.direction.scale * aspectScale * shotScale;
 
   /* ---- pass 1: size every line ---- */
 
@@ -305,26 +319,67 @@ export function buildScene(opts: BuildSceneOptions): CaptionScene {
     offsets.push(cursor);
   });
 
-  // Centre the whole block on the composition's anchor.
-  const blockTop = offsets.length > 0 ? -sized[0].lineHeightFrac * ASCENT : 0;
-  const blockBottom =
-    offsets.length > 0 ? cursor + sized[sized.length - 1].lineHeightFrac * DESCENT : 0;
-  const blockCentre = (blockTop + blockBottom) / 2;
+  /* ---- pass 3: decide where the block goes ---- */
+
+  // Offsets are relative to the block anchor, so the solver can move the whole
+  // composition as a unit without disturbing its internal arrangement.
+  const blockCentre = offsets.length > 0
+    ? (-sized[0].lineHeightFrac * ASCENT + cursor + sized[sized.length - 1].lineHeightFrac * DESCENT) / 2
+    : 0;
+  const slotCentreX = mean(sized.map((e) => e.slot.x));
+
+  const placedLines: PlacedLine[] = sized.map((entry, i) => ({
+    offsetX: entry.slot.x - slotCentreX,
+    offsetY: offsets[i] - blockCentre,
+    align: entry.slot.align,
+    width: Math.min(
+      entry.maxWidth,
+      estimateLayerWidth(
+        captionLayerSchema.parse({
+          id: entry.layerId,
+          startMs: opts.startMs,
+          endMs: opts.endMs,
+          x: 0.5,
+          y: 0.5,
+          maxWidth: entry.maxWidth,
+          fontSize: entry.fontSize,
+          lineHeight: preset.leading,
+          textAlign: entry.slot.align,
+          runs: entry.runs,
+        }),
+        opts.dims.height,
+      ) / opts.dims.width,
+    ),
+    height: entry.lineHeightFrac,
+  }));
+
+  const textLuma = meanTextLuma(sized.flatMap((e) => e.runs));
+
+  const placement = solvePlacement({
+    lines: placedLines,
+    composition: comp,
+    map: opts.frameMap ?? null,
+    textLuma,
+    previousAnchor: opts.previousAnchor ?? null,
+  });
 
   const layers: CaptionLayer[] = [];
 
   sized.forEach((entry, index) => {
     const { line, slot, layerId, runs, fontSize, maxWidth } = entry;
+    const placedLine = placedLines[index];
 
     const rotation = slot.rotate * preset.rotationBudget * opts.direction.rotationLevel;
-    const y = comp.anchorY + (offsets[index] - blockCentre);
+    const x = placement.x + placedLine.offsetX;
+    const y = placement.y + placedLine.offsetY;
 
     const timing = lineTiming(line.words.map((w) => w.wordId), opts);
     const anim = pickAnimations(line, preset, opts, index, timing);
 
-    // Dark type on a dark frame is the failure users notice instantly.
-    const luma = opts.backdropLuma ?? 0.5;
-    const shadow = Math.max(0, Math.min(1, preset.shadow + (luma > 0.62 ? 0.35 : 0) + (luma < 0.18 ? -0.12 : 0)));
+    // Contrast is measured under this specific line rather than across the whole
+    // frame: a frame that is bright sky above a black coat has no useful average,
+    // and that is exactly where captions become unreadable.
+    const shadow = shadowFor(opts, placedLine, x, y, preset.shadow);
 
     layers.push(
       captionLayerSchema.parse({
@@ -333,7 +388,7 @@ export function buildScene(opts: BuildSceneOptions): CaptionScene {
         role: line.role,
         startMs: timing.startMs,
         endMs: timing.endMs,
-        x: slot.x,
+        x,
         y,
         maxWidth,
         rotation,
@@ -366,7 +421,9 @@ export function buildScene(opts: BuildSceneOptions): CaptionScene {
     layers,
   });
 
-  return resolveCollisions(scene, opts.dims);
+  // With a measured frame the solver has already placed things properly; the
+  // old ladder only runs as a margin guard when there is nothing to measure.
+  return opts.frameMap ? scene : resolveCollisions(scene, opts.dims);
 }
 
 /**
@@ -564,6 +621,8 @@ export interface ExpandOptions {
   dims: ProjectDims;
   words: TranscriptWord[];
   groups: SceneGroup[];
+  /** Measured frames, keyed by scene id. Placement is much better with them. */
+  frameMaps?: Map<string, FrameMap>;
 }
 
 /**
@@ -582,13 +641,22 @@ export function expandAiDesign(
   const wordsById = new Map(opts.words.map((w) => [w.id, w]));
   const aiById = new Map(ai.scenes.map((s) => [s.id, s]));
 
+  // Carried forward so each scene is placed with knowledge of the last one,
+  // which is what stops the block jumping between corners.
+  let previousAnchor: { x: number; y: number } | null = null;
+
   return opts.groups.map((group, index) => {
+    const frameMap = opts.frameMaps?.get(group.id) ?? null;
     const aiScene = aiById.get(group.id);
-    if (!aiScene) return autoScene(group, wordsById, direction, opts.dims, index);
-    return (
-      buildFromAiScene(aiScene, group, wordsById, direction, opts.dims, index) ??
-      autoScene(group, wordsById, direction, opts.dims, index)
-    );
+
+    const scene =
+      (aiScene
+        ? buildFromAiScene(aiScene, group, wordsById, direction, opts.dims, index, frameMap, previousAnchor)
+        : null) ?? autoScene(group, wordsById, direction, opts.dims, index, frameMap, previousAnchor);
+
+    const hero = scene.layers.find((l) => l.role === 'hero') ?? scene.layers[0];
+    if (hero) previousAnchor = { x: hero.x, y: hero.y };
+    return scene;
   });
 }
 
@@ -599,6 +667,8 @@ export function buildFromAiScene(
   direction: ArtDirection,
   dims: ProjectDims,
   seed: number,
+  frameMap: FrameMap | null = null,
+  previousAnchor: { x: number; y: number } | null = null,
 ): CaptionScene | null {
   const allowed = new Set(group.wordIds);
   const preset = getPreset(direction.preset);
@@ -658,14 +728,24 @@ export function buildFromAiScene(
     startMs: group.startMs,
     endMs: group.endMs,
     keyframeTimestampMs: group.keyframeTimestampMs,
-    compositionId: aiScene.compositionId,
+    // The model's composition only survives if it suits the measured shot.
+    compositionId: compositionsForShot([aiScene.compositionId], frameMap?.shot, frameMap)[0]
+      ?? aiScene.compositionId,
     lines,
     direction,
     dims,
-    avoidRegions: aiScene.avoidRegions,
+    // Measured regions replace the model's guesses when we have them.
+    avoidRegions: frameMap
+      ? [
+          ...frameMap.faces.map((f) => ({ ...f, kind: 'face' as const })),
+          ...(frameMap.subject ? [{ ...frameMap.subject, kind: 'subject' as const }] : []),
+        ]
+      : aiScene.avoidRegions,
     backdropLuma: aiScene.backdropLuma,
     wordsById,
     seed,
+    frameMap,
+    previousAnchor,
   });
 }
 
@@ -703,11 +783,28 @@ export function autoDesign(
   direction: ArtDirection,
   dims: ProjectDims,
   groups?: SceneGroup[],
+  frameMaps?: Map<string, FrameMap>,
 ): CaptionScene[] {
   const preset = getPreset(direction.preset);
   const wordsById = new Map(words.map((w) => [w.id, w]));
   const sceneGroups = groups ?? groupIntoScenes(words, { targetWords: preset.sceneWordTarget });
-  return sceneGroups.map((group, i) => autoScene(group, wordsById, direction, dims, i));
+
+  let previousAnchor: { x: number; y: number } | null = null;
+
+  return sceneGroups.map((group, i) => {
+    const scene = autoScene(
+      group,
+      wordsById,
+      direction,
+      dims,
+      i,
+      frameMaps?.get(group.id) ?? null,
+      previousAnchor,
+    );
+    const hero = scene.layers.find((l) => l.role === 'hero') ?? scene.layers[0];
+    if (hero) previousAnchor = { x: hero.x, y: hero.y };
+    return scene;
+  });
 }
 
 function autoScene(
@@ -716,12 +813,23 @@ function autoScene(
   direction: ArtDirection,
   dims: ProjectDims,
   index: number,
+  frameMap: FrameMap | null = null,
+  previousAnchor: { x: number; y: number } | null = null,
 ): CaptionScene {
   const preset = getPreset(direction.preset);
   const words = group.wordIds.map((id) => wordsById.get(id)).filter((w): w is TranscriptWord => !!w);
 
   const portrait = dims.height >= dims.width;
-  const pool = preset.compositions.filter((id) => portrait || getComposition(id).orientation !== 'portrait');
+  const orientationOk = preset.compositions.filter(
+    (id) => portrait || getComposition(id).orientation !== 'portrait',
+  );
+  // Then drop arrangements that fight the shot - a centred stack over a
+  // close-up portrait is wrong however good the typography is.
+  const pool = compositionsForShot(
+    orientationOk.length > 0 ? orientationOk : COMPOSITION_IDS,
+    frameMap?.shot,
+    frameMap,
+  );
   const compositions = pool.length > 0 ? pool : COMPOSITION_IDS;
   const compositionId = compositions[index % compositions.length];
 
@@ -753,7 +861,80 @@ function autoScene(
     lines,
     direction,
     dims,
+    avoidRegions: frameMap
+      ? [
+          ...frameMap.faces.map((f) => ({ ...f, kind: 'face' as const })),
+          ...(frameMap.subject ? [{ ...frameMap.subject, kind: 'subject' as const }] : []),
+        ]
+      : [],
     wordsById,
     seed: index + 1,
+    frameMap,
+    previousAnchor,
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-line contrast                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Text luminance across a set of runs, weighted by how much text each holds. */
+function meanTextLuma(runs: TextRun[]): number {
+  let total = 0;
+  let weight = 0;
+  for (const run of runs) {
+    const w = Math.max(1, run.text.length);
+    total += hexLuma(run.color) * w;
+    weight += w;
+  }
+  return weight > 0 ? total / weight : 1;
+}
+
+/**
+ * Shadow strength for one line, from what is actually behind it.
+ *
+ * The first version used a single luminance for the whole frame, which is
+ * meaningless on a frame that is bright at the top and black at the bottom -
+ * one caption ended up over-shadowed and another unreadable. This samples the
+ * region the line will occupy and reacts to both its brightness and how broken
+ * up it is, since detail behind text hurts legibility as much as brightness.
+ */
+function shadowFor(
+  opts: BuildSceneOptions,
+  line: PlacedLine,
+  x: number,
+  y: number,
+  presetShadow: number,
+): number {
+  const map = opts.frameMap;
+  if (!map) {
+    const luma = opts.backdropLuma ?? 0.5;
+    return clamp(presetShadow + (luma > 0.62 ? 0.35 : 0) + (luma < 0.18 ? -0.12 : 0), 0, 1);
+  }
+
+  const left =
+    line.align === 'left' ? x : line.align === 'right' ? x - line.width : x - line.width / 2;
+  const rect = {
+    x: left,
+    y: y - line.height * 0.8,
+    width: line.width,
+    height: line.height * 1.1,
+  };
+
+  const behind = regionLuma(map, rect);
+  const spread = regionLumaSpread(map, rect);
+  const busy = regionBusyness(map, rect);
+
+  // Bright or broken-up backdrops need more separation; an evenly dark one
+  // needs almost none, and piling on shadow there just makes type look muddy.
+  return clamp(
+    presetShadow + Math.max(0, behind - 0.5) * 0.9 + spread * 0.7 + busy * 0.35 - (behind < 0.2 ? 0.15 : 0),
+    0,
+    1,
+  );
+}
+
+/** Arithmetic mean, defaulting to the frame centre for an empty list. */
+function mean(values: number[]): number {
+  return values.length === 0 ? 0.5 : values.reduce((a, b) => a + b, 0) / values.length;
 }

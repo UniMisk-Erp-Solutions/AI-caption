@@ -1,4 +1,13 @@
-import { layerText, type EditorState } from '@kc/shared';
+import {
+  autoDesign,
+  editorStateSchema,
+  formatScorecard,
+  scoreDesign,
+  groupIntoScenes,
+  getPreset,
+  layerText,
+  type EditorState,
+} from '@kc/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { cn } from '../../lib/cn';
 import { apiHealth, completeUpload, performUpload, requestDownloadUrl, requestUploadUrl } from '../../lib/api';
@@ -6,6 +15,7 @@ import { recordAsset, supabase } from '../../lib/supabase';
 import { exportStill, exportVideo } from '../../media/export';
 import { probeMedia } from '../../media/probe';
 import { extractAudioForTranscription } from '../../media/audio';
+import { analyzeScenes } from '../../media/frames';
 import { runPipeline, type StepState } from '../processing/pipeline';
 
 /**
@@ -299,11 +309,169 @@ export function HarnessPage() {
     }
   }, [say]);
 
+  /**
+   * Score an existing design against freshly measured frames.
+   *
+   * Separate from the full run so placement quality can be re-measured without
+   * spending an AI call - which is what makes a before/after comparison honest
+   * rather than a re-roll of a non-deterministic pipeline.
+   */
+  const runScore = useCallback(
+    async (designUrl = `${BRIDGE}/design.json`) => {
+      if (startedRef.current) return;
+      startedRef.current = true;
+      setStatus('running');
+
+      try {
+        const file = await (await fetch(`${BRIDGE}/test.mp4`)).blob();
+        const state = editorStateSchema.parse(await (await fetch(designUrl)).json());
+        say(`scoring ${designUrl.split('/').pop()} · ${state.design.scenes.length} scenes`, 'ok');
+
+        const maps = await analyzeScenes(file, state.design.scenes);
+        say(`measured ${maps.size} scenes from real pixels`, 'ok');
+
+        for (const scene of state.design.scenes) {
+          const map = maps.get(scene.id);
+          if (!map) continue;
+          say(
+            `  ${scene.id} shot=${map.shot} faces=${map.faces.length}` +
+              (map.faces[0]
+                ? ` at [${map.faces[0].x.toFixed(2)},${map.faces[0].y.toFixed(2)},${map.faces[0].width.toFixed(2)},${map.faces[0].height.toFixed(2)}]`
+                : '') +
+              (map.subject
+                ? ` subject [${map.subject.x.toFixed(2)},${map.subject.y.toFixed(2)},${map.subject.width.toFixed(2)},${map.subject.height.toFixed(2)}]`
+                : ''),
+          );
+        }
+
+        const card = scoreDesign({ state, frameMaps: maps });
+        for (const line of formatScorecard(card).split('\n')) say(line, 'info');
+        say(`SCORE ${(card.overall * 100).toFixed(0)}% · ${card.passed}/${card.total}`, 'ok');
+        say('DONE', 'ok');
+        setStatus('done');
+      } catch (error) {
+        say(error instanceof Error ? error.message : String(error), 'fail');
+        say('FAILED', 'fail');
+        setStatus('failed');
+      }
+    },
+    [say],
+  );
+
+  /**
+   * Controlled A/B of the layout engine.
+   *
+   * Takes one existing transcript and lays it out twice - once blind, once with
+   * the measured frames - then scores both. Because the words, timings and art
+   * direction are identical and no model is involved, any difference is caused
+   * by the placement engine and nothing else.
+   *
+   * This exists because comparing two full pipeline runs is meaningless:
+   * transcription is non-deterministic, so the transcript changes underneath
+   * the comparison and the numbers move for reasons unrelated to the change.
+   */
+  const runRelayout = useCallback(
+    async (designUrl = `${BRIDGE}/design-before.json`) => {
+      if (startedRef.current) return;
+      startedRef.current = true;
+      setStatus('running');
+
+      try {
+        const file = await (await fetch(`${BRIDGE}/test.mp4`)).blob();
+        const source = editorStateSchema.parse(await (await fetch(designUrl)).json());
+        const { width, height } = source.project;
+        const dims = { width, height };
+        const words = source.transcript.words;
+        const direction = source.design.direction;
+
+        say(`A/B on ${words.length} words · preset ${direction.preset}`, 'ok');
+
+        const preset = getPreset(direction.preset);
+        const groups = groupIntoScenes(words, { targetWords: preset.sceneWordTarget });
+
+        const maps = await analyzeScenes(file, groups);
+        say(`measured ${maps.size} scenes`, 'ok');
+        for (const [id, map] of maps) {
+          say(`  ${id} shot=${map.shot} faces=${map.faces.length}`);
+        }
+
+        const variants: Array<[string, ReturnType<typeof autoDesign>]> = [
+          ['BLIND (no frame measurement)', autoDesign(words, direction, dims, groups)],
+          ['MEASURED (2-D solver)', autoDesign(words, direction, dims, groups, maps)],
+        ];
+
+        for (const [label, scenes] of variants) {
+          const state = { ...source, design: { direction, scenes } };
+          const card = scoreDesign({ state, frameMaps: maps });
+          say(`--- ${label} ---`, 'ok');
+          for (const line of formatScorecard(card).split('\n')) say(line, 'info');
+        }
+
+        // Render the measured variant so the improvement can be looked at, not
+        // only read off a scorecard.
+        const finalState = { ...source, design: { direction, scenes: variants[1][1] } };
+        await fetch(`${BRIDGE}/result`, {
+          method: 'POST',
+          headers: { 'X-Result-Name': 'design.json' },
+          body: new Blob([JSON.stringify(finalState, null, 2)], { type: 'application/json' }),
+        }).catch(() => undefined);
+
+        let n = 0;
+        for (const scene of finalState.design.scenes) {
+          n++;
+          const at = scene.startMs + (scene.endMs - scene.startMs) * 0.85;
+          for (const [tag, state] of [
+            ['blind', { ...source, design: { direction, scenes: variants[0][1] } }],
+            ['measured', finalState],
+          ] as const) {
+            const png = await exportStill(file, state, at, width, height);
+            await fetch(`${BRIDGE}/result`, {
+              method: 'POST',
+              headers: { 'X-Result-Name': `ab-${n}-${tag}.png` },
+              body: png,
+            }).catch(() => undefined);
+          }
+          say(`  ab-${n}-blind.png / ab-${n}-measured.png at ${(at / 1000).toFixed(1)}s`);
+        }
+
+        say('exporting the measured variant…');
+        const output = await exportVideo(
+          file,
+          finalState,
+          {
+            width: width % 2 === 0 ? width : width - 1,
+            height: height % 2 === 0 ? height : height - 1,
+            fps: 30,
+            bitrate: 6_000_000,
+            includeAudio: true,
+          },
+          () => undefined,
+        );
+        await fetch(`${BRIDGE}/result`, {
+          method: 'POST',
+          headers: { 'X-Result-Name': 'result.mp4' },
+          body: output.blob,
+        }).catch(() => undefined);
+        say(`wrote result.mp4 · ${(output.blob.size / 1024 / 1024).toFixed(2)} MB`, 'ok');
+
+        say('DONE', 'ok');
+        setStatus('done');
+      } catch (error) {
+        say(error instanceof Error ? error.message : String(error), 'fail');
+        say('FAILED', 'fail');
+        setStatus('failed');
+      }
+    },
+    [say],
+  );
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('storage') === '1') void runStorage();
+    if (params.get('relayout') === '1') void runRelayout(params.get('design') ?? undefined);
+    else if (params.get('score') === '1') void runScore(params.get('design') ?? undefined);
+    else if (params.get('storage') === '1') void runStorage();
     else if (params.get('auto') === '1') void run();
-  }, [run, runStorage]);
+  }, [run, runStorage, runScore, runRelayout]);
 
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-10">
@@ -315,6 +483,12 @@ export function HarnessPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <button className="btn-outline" onClick={() => void runRelayout()} disabled={status === 'running'}>
+            A/B layout
+          </button>
+          <button className="btn-outline" onClick={() => void runScore()} disabled={status === 'running'}>
+            Score design
+          </button>
           <button className="btn-outline" onClick={() => void runStorage()} disabled={status === 'running'}>
             Storage only
           </button>

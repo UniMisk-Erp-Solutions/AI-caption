@@ -127,7 +127,11 @@ export async function handleTranscribe(request: Request, env: Env, headers: Head
 
   const audio = await readAudio(form);
 
-  const { text: raw, model } = await generateWithFallback(
+  // How long the audio actually is, so "did it transcribe all of it" is a
+  // question we can answer rather than assume.
+  const durationMs = Number(form.get('durationMs') ?? 0);
+
+  const { text: raw, model, degraded } = await generateWithFallback(
     env,
     'transcribe',
     {
@@ -141,14 +145,45 @@ export async function handleTranscribe(request: Request, env: Env, headers: Head
       jsonMode: true,
       maxOutputTokens: 16384,
     },
-    // "Usable" means it actually contains words, not merely that the HTTP call
-    // succeeded - a model can return an empty body and still report success.
+    /**
+     * "Usable" means the transcript actually covers the audio.
+     *
+     * Two failures made this necessary, and neither raised an error. A model
+     * can return an empty body while reporting success; and even at
+     * temperature 0 transcription is non-deterministic, so the same clip
+     * transcribed fully on one run and stopped 30% early on the next. Without
+     * this check the pipeline accepted the short one and produced a video with
+     * several seconds silently uncaptioned.
+     */
     (text) => {
       try {
         const candidate = transcriptionResultSchema.safeParse(extractJson(text));
-        return candidate.success && candidate.data.words.length > 0;
+        if (!candidate.success || candidate.data.words.length === 0) return false;
+
+        if (durationMs > 0) {
+          const end = Math.max(...candidate.data.words.map((w) => w.endMs));
+          // Held strict deliberately: a clip that genuinely ends in silence
+          // cannot reach this, and the `rank` fallback below returns the best
+          // attempt rather than failing. What this must not do is quietly
+          // accept a transcript that stopped a third of the way through.
+          if (end < durationMs * 0.92) return false;
+        }
+        return true;
       } catch {
         return false;
+      }
+    },
+    // Quality score for the best-effort fallback: how much of the audio the
+    // transcript actually covers.
+    (text) => {
+      try {
+        const candidate = transcriptionResultSchema.safeParse(extractJson(text));
+        if (!candidate.success || candidate.data.words.length === 0) return 0;
+        if (durationMs <= 0) return 0.5;
+        const end = Math.max(...candidate.data.words.map((w) => w.endMs));
+        return Math.max(0.01, Math.min(1, end / durationMs));
+      } catch {
+        return 0;
       }
     },
   );
@@ -169,7 +204,12 @@ export async function handleTranscribe(request: Request, env: Env, headers: Head
     })),
   );
 
-  return json({ ...parsed.data, words, model }, {}, headers);
+  const coverage =
+    durationMs > 0 && words.length > 0
+      ? Math.min(1, words[words.length - 1].endMs / durationMs)
+      : 1;
+
+  return json({ ...parsed.data, words, model, coverage, degraded }, {}, headers);
 }
 
 /** A "timestamp" under 1000 for a multi-word clip is almost certainly seconds. */
