@@ -177,6 +177,8 @@ const SYSTEM_SEPARATOR = '\n\n---\n\n';
  * special cases, `generate` starts optimistic and retries without whichever
  * feature the API actually objected to.
  */
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const isGemma = (model: string) => model.toLowerCase().includes('gemma');
 const isTranscribeModel = (model: string) => model.toLowerCase().includes('transcribe');
 
@@ -247,6 +249,18 @@ export async function generate(env: Env, options: GenerateOptions): Promise<stri
     });
 
   let response = await send();
+
+  // Free-tier limits are per-minute far more often than per-day, so a 429 is
+  // usually "wait a moment", not "you are out". Honour Retry-After when the API
+  // sends one, otherwise back off and try twice more before surfacing it.
+  for (let attempt = 0; attempt < 2 && response.status === 429; attempt++) {
+    const retryAfter = Number(response.headers.get('Retry-After'));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 30_000)
+      : 2000 * 2 ** attempt;
+    await sleep(waitMs);
+    response = await send();
+  }
 
   // A 400 naming an option we sent means this model does not support it. Drop
   // that option and retry once, so a model with a narrower feature set works
@@ -376,6 +390,16 @@ export function extractJson(raw: string): unknown {
  * explicit check the pipeline silently degrades to "no transcript" and the user
  * gets a video with no captions and no explanation.
  */
+/**
+ * How many models one request may try.
+ *
+ * The chain exists to survive a model that returns nothing, not to hammer the
+ * API. Walking all seven candidates fires seven requests within a few seconds,
+ * which on a free tier trips the per-minute limit and turns a recoverable
+ * hiccup into a hard failure - measured, not theoretical.
+ */
+const MAX_CHAIN_ATTEMPTS = 3;
+
 export async function generateWithFallback(
   env: Env,
   capability: Capability,
@@ -391,11 +415,14 @@ export async function generateWithFallback(
    */
   rank?: (text: string) => number,
 ): Promise<{ text: string; model: string; degraded: boolean }> {
-  const chain = await resolveModelChain(env, capability);
+  const chain = (await resolveModelChain(env, capability)).slice(0, MAX_CHAIN_ATTEMPTS);
   let lastError: unknown = null;
   let best: { text: string; model: string; score: number } | null = null;
 
-  for (const model of chain) {
+  for (const [index, model] of chain.entries()) {
+    // Pace the walk so a failing chain cannot become a burst of its own.
+    if (index > 0) await sleep(600);
+
     try {
       const text = await generate(env, { ...options, model });
 

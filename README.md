@@ -302,6 +302,30 @@ A drag produces one undo entry, not sixty. Any layer you touch is marked
 
 ---
 
+## Free-tier headroom
+
+Measured, not estimated. One video costs **3 requests**: transcribe, verify,
+design.
+
+| Call | Tokens (12s clip) | Scales with |
+| --- | --- | --- |
+| Transcribe | 361 (306 audio) | ~26 tokens per second of audio |
+| Verify | ~360 | same |
+| Design | ~4,000 | ~258 per keyframe, up to 16 |
+
+A 60-second video is roughly 9k input tokens. Two or three videos a day is
+around 9 requests and 30k tokens - far inside the free daily allowance.
+
+**The binding limit is requests per minute, not per day.** Free tiers throttle
+bursts, and the model chain was capable of firing seven requests within a few
+seconds when a transcript failed its coverage check. That is what exhausted the
+key during development - never the daily volume. So the chain is capped at three
+attempts, paced 600ms apart, and a 429 now backs off (honouring `Retry-After`)
+and retries rather than failing the request.
+
+If you do hit a limit, `/health` shows which models resolved, and the pipeline
+degrades to the built-in designer rather than producing nothing.
+
 ## Limits
 
 Set in `packages/shared/src/constants/limits.ts`, and enforced in the database
