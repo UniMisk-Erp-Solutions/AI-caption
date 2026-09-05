@@ -162,11 +162,24 @@ export interface GenerateOptions {
   maxOutputTokens?: number;
   /** Ask for `application/json`. Not supported by Gemma, so it is conditional. */
   jsonMode?: boolean;
+  /**
+   * How many times to wait out a transient failure before giving up on this
+   * model. Waiting is right when this model is the only option left, and wrong
+   * when another model in the chain is sitting there with its own quota - so
+   * the chain sets this to 0 for every model but the last.
+   */
+  transientRetries?: number;
   signal?: AbortSignal;
 }
 
 /** Separator used when a system prompt has to ride inside the user turn. */
 const SYSTEM_SEPARATOR = '\n\n---\n\n';
+
+/**
+ * Statuses that say "not now" rather than "not ever", so retrying the identical
+ * request is worthwhile: 429 is quota, 500/503 are capacity.
+ */
+const isTransient = (status: number) => status === 429 || status === 500 || status === 503;
 
 /**
  * Not every model accepts the extras a chat model does.
@@ -253,7 +266,13 @@ export async function generate(env: Env, options: GenerateOptions): Promise<stri
   // Free-tier limits are per-minute far more often than per-day, so a 429 is
   // usually "wait a moment", not "you are out". Honour Retry-After when the API
   // sends one, otherwise back off and try twice more before surfacing it.
-  for (let attempt = 0; attempt < 2 && response.status === 429; attempt++) {
+  //
+  // 503 gets the same treatment: it means "this model is busy right now", which
+  // the API itself describes as temporary. Measured on a free-tier key, a clip
+  // that 503'd on every model in the chain transcribed fine on a retry moments
+  // later - so failing out on the first 503 threw away a working request.
+  const transientRetries = options.transientRetries ?? 2;
+  for (let attempt = 0; attempt < transientRetries && isTransient(response.status); attempt++) {
     const retryAfter = Number(response.headers.get('Retry-After'));
     const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
       ? Math.min(retryAfter * 1000, 30_000)
@@ -424,7 +443,14 @@ export async function generateWithFallback(
     if (index > 0) await sleep(600);
 
     try {
-      const text = await generate(env, { ...options, model });
+      const isLast = index === chain.length - 1;
+      const text = await generate(env, {
+        ...options,
+        model,
+        // Only the last model is worth waiting for; before that, moving on is
+        // both faster and likelier to succeed.
+        transientRetries: isLast ? undefined : 0,
+      });
 
       if (isUsable(text)) return { text, model, degraded: false };
 
@@ -435,9 +461,11 @@ export async function generateWithFallback(
         `Model ${model} returned nothing usable for ${capability} (score ${score.toFixed(2)}); trying the next.`,
       );
     } catch (error) {
-      // A rate limit will hit every model in the chain, so stop rather than
-      // burning the remaining quota on requests that cannot succeed.
-      if (error instanceof HttpError && error.status === 429) throw error;
+      // Free-tier quota is metered per model, not per key, so a rate-limited
+      // model says nothing about the next one in the chain - measured live:
+      // gemini-3.5-flash returned 429 while gemini-3.6-flash transcribed the
+      // same clip seconds later on the same key. Carrying on is the difference
+      // between a working app and a dead one during a busy hour.
       lastError = error;
       console.warn(`Model ${model} failed for ${capability}:`, (error as Error)?.message);
     }
