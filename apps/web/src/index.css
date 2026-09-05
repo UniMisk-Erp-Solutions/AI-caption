@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-950 text-ink-100 font-ui antialiased;
+    margin: 0;
+    overscroll-behavior: none;
+  }
+
+  /* The editor is a fixed-height app shell, not a scrolling document. */
+  #root {
+    display: flex;
+    flex-direction: column;
+  }
+
+  ::selection {
+    @apply bg-accent/30 text-white;
+  }
+
+  /* Thin scrollbars everywhere - the panels are narrow and the default
+     Windows scrollbar eats a meaningful slice of an inspector column. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.ink.600') transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    @apply bg-ink-600 rounded-full;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-500;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  [type='range'] {
+    @apply h-1 w-full cursor-pointer appearance-none rounded-full bg-ink-700;
+  }
+  [type='range']::-webkit-slider-thumb {
+    @apply h-3.5 w-3.5 appearance-none rounded-full bg-accent shadow;
+    margin-top: -1px;
+  }
+  [type='range']::-moz-range-thumb {
+    @apply h-3.5 w-3.5 rounded-full border-0 bg-accent;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-ink-900 border-ink-800;
+  }
+
+  .label {
+    @apply text-[11px] font-medium uppercase tracking-[0.14em] text-ink-400;
+  }
+
+  .field {
+    @apply w-full rounded-md border border-ink-700 bg-ink-850 px-2.5 py-1.5 text-sm
+           text-ink-100 outline-none transition
+           placeholder:text-ink-500
+           focus:border-accent/60 focus:ring-1 focus:ring-accent/30;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm
+           font-medium transition disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-ink-950 hover:bg-accent-soft;
+  }
+  .btn-ghost {
+    @apply btn text-ink-200 hover:bg-ink-800 hover:text-white;
+  }
+  .btn-outline {
+    @apply btn border border-ink-700 text-ink-200 hover:border-ink-600 hover:bg-ink-850 hover:text-white;
+  }
+  .btn-danger {
+    @apply btn border border-red-900/60 text-red-300 hover:bg-red-950/40;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-ink-700 bg-ink-850
+           px-2 py-0.5 text-[11px] text-ink-300;
+  }
+}
+
+/* The canvas must never be blurred by the browser's image smoothing when the
+   preview is scaled down - captions are the whole product. */
+.preview-canvas {
+  image-rendering: auto;
+}
