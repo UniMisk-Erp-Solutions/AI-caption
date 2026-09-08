@@ -13,3 +13,8 @@ dist/
 !.dev.vars.example
 *.pem
 *.key
+
+# Benchmark inputs and outputs. The clips are the user's own media and the
+# results are a point-in-time measurement, not source.
+test-*.mp4
+bench-results.json

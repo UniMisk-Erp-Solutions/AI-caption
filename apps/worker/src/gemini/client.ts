@@ -30,19 +30,48 @@ export type Capability = 'transcribe' | 'analyze' | 'design';
  * if the dedicated endpoint starts returning content.
  */
 const PREFERENCES: Record<Capability, string[]> = {
+  /*
+   * Ordered by measurement, not version number. Six clips, one request per
+   * clip per model, scored on cross-model agreement (token-level edit distance
+   * against the other models' transcripts of the same audio), coverage, and
+   * how much of the output was a repeated 4-gram:
+   *
+   *   model              agree  cover   loop   completed
+   *   gemini-3.6-flash    0.81   0.97   0.05      6/6
+   *   gemini-3.5-flash    0.77   0.99   0.14      5/6
+   *   gemini-3.7-flash    0.75   1.00   0.14      4/6
+   *   gemini-3.8-flash      -      -      -       0/6
+   *
+   * 3.6 leads on agreement, loops a third as much, and was the only model to
+   * finish every clip. On a single song it had looked clearly worse than 3.5,
+   * which is why the order is set from six clips rather than one.
+   *
+   * 3.7 is fastest (7-17s vs 12-68s) and tied for best coverage; its failures
+   * were 503 capacity, which the retry above already absorbs, so it sits above
+   * 3.5 - whose one failure was malformed JSON, a fault no retry fixes.
+   *
+   * 3.8 answered nothing at all across six clips (503/429) and is kept only
+   * below the attempt limit, where it costs nothing.
+   */
   transcribe: [
-    'gemini-3.5-flash',
     'gemini-3.6-flash',
     'gemini-3.7-flash',
+    'gemini-3.5-flash',
     'gemini-3.8-flash',
     'gemini-3.5-transcribe',
-    'gemini-2.5-pro',
+    // No 2.5-* here. The API still lists gemini-2.5-pro and gemini-2.5-flash,
+    // but generateContent returns 404 "no longer available to new users" for
+    // keys made after their retirement - so listing them buys a wasted attempt
+    // and a slower failure, not a fallback.
     'gemini-flash-latest',
   ],
+  // Same family, same audio, so the transcription ranking carries over. This
+  // pass corrects misheard words, which is precisely where 3.6's higher
+  // agreement matters most.
   analyze: [
-    'gemini-3.5-flash',
     'gemini-3.6-flash',
     'gemini-3.7-flash',
+    'gemini-3.5-flash',
     'gemini-3-flash-preview',
     'gemini-flash-latest',
   ],

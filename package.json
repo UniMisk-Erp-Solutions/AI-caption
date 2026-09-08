@@ -8,7 +8,8 @@
     "dev:worker": "pnpm --filter @kc/worker dev",
     "build": "pnpm --filter @kc/shared build && pnpm --filter @kc/web build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @kc/shared test"
+    "test": "pnpm --filter @kc/shared test",
+    "bench:transcribe": "node scripts/bench-transcribe.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
