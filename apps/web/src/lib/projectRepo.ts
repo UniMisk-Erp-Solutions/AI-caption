@@ -18,6 +18,7 @@ import {
   requestUploadUrl,
 } from './api';
 import { hasApi, hasSupabase } from './env';
+import { describeError } from './errors';
 import {
   createRemoteProject,
   deleteRemoteProject,
@@ -130,7 +131,15 @@ export async function createProject(input: {
   fps: number;
   durationMs: number;
   thumbnail: Blob | null;
-}): Promise<void> {
+  /**
+   * Why the cloud copy could not be created, or null when it was.
+   *
+   * Local creation always succeeds, so returning the reason rather than
+   * throwing keeps the editor usable offline - but swallowing it entirely
+   * meant the row was missing and the upload then failed with a confusing
+   * "Project not found", with the real cause never shown.
+   */
+}): Promise<string | null> {
   await putLocalProject({
     id: input.id,
     title: input.title,
@@ -148,15 +157,21 @@ export async function createProject(input: {
   });
 
   if (hasSupabase) {
-    await createRemoteProject({
-      id: input.id,
-      title: input.title,
-      width: input.width,
-      height: input.height,
-      fps: input.fps,
-      durationMs: input.durationMs,
-    }).catch(() => undefined);
+    try {
+      await createRemoteProject({
+        id: input.id,
+        title: input.title,
+        width: input.width,
+        height: input.height,
+        fps: input.fps,
+        durationMs: input.durationMs,
+      });
+    } catch (error) {
+      return describeError(error);
+    }
   }
+
+  return null;
 }
 
 /**

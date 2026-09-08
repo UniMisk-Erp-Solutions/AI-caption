@@ -3,6 +3,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Field, SegmentedControl, Spinner } from '../../components/ui';
 import { cn } from '../../lib/cn';
+import { describeError } from '../../lib/errors';
 import { hasApi } from '../../lib/env';
 import { formatBytes, formatTime } from '../../lib/format';
 import { newUuid } from '../../lib/id';
@@ -87,7 +88,20 @@ export function UploadPage() {
     try {
       const thumbnail = await generateThumbnail(file, media.durationMs).catch(() => null);
 
-      await createProject({
+      // Held locally as well as in state: the state setter below cannot be read
+      // back in this same closure, so deciding the warning from `uploadError`
+      // always read the previous render's value - which is stale exactly when
+      // it matters.
+      let backupError: string | null = null;
+      const fail = (reason: string) => {
+        backupError = reason;
+        setUploadError(reason);
+      };
+
+      // A failed cloud copy leaves the project usable on this device, so it is
+      // reported rather than thrown. It has to be reported though: without the
+      // remote row the upload below fails with a baffling "Project not found".
+      const remoteError = await createProject({
         id: projectId,
         title: file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'Untitled',
         file,
@@ -98,6 +112,7 @@ export function UploadPage() {
         durationMs: media.durationMs,
         thumbnail,
       });
+      if (remoteError) fail(remoteError);
 
       // The upload runs alongside the AI work rather than blocking it - the
       // pipeline reads the local blob, so there is no reason to wait.
@@ -106,29 +121,30 @@ export function UploadPage() {
       // storage backend configured looked exactly like a working one: the
       // project opened normally and the video simply never left the browser,
       // with nothing said. Now it is reported.
-      const uploading = hasApi
-        ? uploadSource(projectId, file, file.name, setUploadFraction).catch((error: unknown) => {
-            setUploadError(
-              error instanceof Error ? error.message : 'The video could not be backed up.',
-            );
-            return null;
-          })
-        : Promise.resolve(null);
+      const uploading =
+        hasApi && !remoteError
+          ? uploadSource(projectId, file, file.name, setUploadFraction).catch((error: unknown) => {
+              fail(describeError(error));
+              return null;
+            })
+          : Promise.resolve(null);
 
       const result = await runPipeline(
         { projectId, file, media, mode, userTranscript: transcript || undefined },
         setSteps,
       );
 
-      setWarnings(result.warnings);
-      if (uploadError) {
-        setWarnings((prev) => [
-          ...prev,
-          `Saved on this device only - ${uploadError} Your captions are safe, but the video is not backed up.`,
-        ]);
-      }
       await saveState(projectId, result.state);
       await uploading;
+
+      setWarnings(
+        backupError
+          ? [
+              ...result.warnings,
+              `Saved on this device only - ${backupError}. Your captions are safe, but the video is not backed up and will not open on another device.`,
+            ]
+          : result.warnings,
+      );
 
       navigate(`/project/${projectId}`);
     } catch (err) {
