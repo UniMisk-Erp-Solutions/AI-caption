@@ -263,6 +263,16 @@ export async function openProject(projectId: string): Promise<OpenedProject | nu
         if (remoteState && (!state || remoteState.revision > state.revision)) {
           state = remoteState;
           await saveLocalState(projectId, remoteState, true);
+        } else if (state && !remoteState) {
+          // The server has the project but no document. Either it was made
+          // before the autosave bug was fixed - when the first save silently
+          // updated zero rows - or its very first save has not landed yet.
+          // Either way this device holds the only copy, so push it up now
+          // rather than waiting for an edit that may never come.
+          recoveredUnsynced = true;
+          await saveRemoteState(projectId, state)
+            .then((written) => (written ? markSynced(projectId, state!.revision) : undefined))
+            .catch(() => undefined);
         } else if (state && remoteState && state.revision > remoteState.revision && !localRow?.synced) {
           recoveredUnsynced = true;
           // Push the newer local copy straight back up so the two agree again.
