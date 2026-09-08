@@ -191,6 +191,8 @@ type LayerDrag = {
   pointerX: number;
   fromMs: number;
   toMs: number;
+  /** The rest of the selection, with their own starting spans. Move only. */
+  others: Array<{ layerId: string; fromMs: number; toMs: number }>;
 };
 
 /**
@@ -219,6 +221,15 @@ function LayerTrack({
   const selection = useEditorStore((s) => s.selection);
   const timeMs = useEditorStore((s) => s.timeMs);
   const select = useEditorStore((s) => s.select);
+  const toggleLayerSelected = useEditorStore((s) => s.toggleLayerSelected);
+
+  // Group members can live in other scenes now that layers are not confined to
+  // one, so resolve ids against the whole document rather than this scene.
+  const layersById = useEditorStore((st) => {
+    const map = new Map<string, CaptionLayer>();
+    for (const sc of st.state?.design.scenes ?? []) for (const l of sc.layers) map.set(l.id, l);
+    return map;
+  });
   const rowsRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<LayerDrag | null>(null);
 
@@ -315,9 +326,26 @@ function LayerTrack({
 
       // transient: a drag emits dozens of updates and only the last one should
       // become an undo step.
-      useEditorStore
-        .getState()
-        .updateLayer(drag.layerId, { startMs: Math.round(startMs), endMs: Math.round(endMs) }, { transient: true });
+      //
+      // The snapped primary defines the shift, and the rest move by exactly
+      // that, so a group keeps its internal spacing instead of collapsing
+      // together when one bar snaps.
+      const shift = Math.round(startMs) - drag.fromMs;
+      useEditorStore.getState().updateLayers(
+        [
+          { layerId: drag.layerId, patch: { startMs: Math.round(startMs), endMs: Math.round(endMs) } },
+          ...(drag.kind === 'move'
+            ? drag.others.map((other) => ({
+                layerId: other.layerId,
+                patch: {
+                  startMs: Math.max(0, other.fromMs + shift),
+                  endMs: Math.max(1, other.toMs + shift),
+                },
+              }))
+            : []),
+        ],
+        { transient: true },
+      );
     };
 
     const onUp = () => {
@@ -347,13 +375,40 @@ function LayerTrack({
     // The track behind this starts scrubbing on pointerdown; a bar drag is not
     // a scrub.
     event.stopPropagation();
-    if (scene) select(scene.id, layer.id);
+
+    // Shift-click builds a selection here exactly as it does on the canvas, and
+    // likewise starts no drag.
+    if (event.shiftKey) {
+      toggleLayerSelected(scene?.id ?? null, layer.id);
+      return;
+    }
+
+    const inSelection = selection.layerIds.includes(layer.id);
+    if (!inSelection && scene) select(scene.id, layer.id);
+
+    // Trimming stays single-layer: dragging one edge of several bars with
+    // different lengths has no one obvious meaning, and guessing would be worse
+    // than the current, predictable behaviour. Moving is unambiguous.
+    const groupIds =
+      kind === 'move' && inSelection && selection.layerIds.length > 1
+        ? selection.layerIds
+        : [layer.id];
+
+    const others = groupIds
+      .filter((id) => id !== layer.id)
+      .map((id) => {
+        const member = layersById.get(id);
+        return member ? { layerId: id, fromMs: member.startMs, toMs: member.endMs } : null;
+      })
+      .filter((o): o is { layerId: string; fromMs: number; toMs: number } => o !== null);
+
     setDrag({
       kind,
       layerId: layer.id,
       pointerX: event.clientX,
       fromMs: layer.startMs,
       toMs: layer.endMs,
+      others,
     });
   };
 

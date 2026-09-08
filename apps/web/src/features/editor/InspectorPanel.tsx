@@ -73,8 +73,27 @@ export function InspectorPanel() {
     );
   }
 
+  const multiCount = selection.layerIds.length;
+
   return (
     <div className="flex h-full flex-col overflow-y-auto overscroll-contain pb-24 lg:pb-0">
+      {/* Every control below now writes to more than one caption, which is not
+          visible from the controls themselves - so say so, and say which one is
+          being shown. */}
+      {multiCount > 1 && (
+        <div className="flex items-center justify-between gap-2 border-b border-accent/30 bg-accent/10 px-3 py-2">
+          <span className="text-[11px] text-accent-soft">
+            {multiCount} captions selected · edits apply to all
+          </span>
+          <button
+            className="shrink-0 text-[10px] uppercase tracking-wider text-ink-400 hover:text-ink-200"
+            onClick={() => useEditorStore.getState().select(selection.sceneId, layer.id)}
+          >
+            Just this one
+          </button>
+        </div>
+      )}
+
       <WordsSection layer={layer} sceneId={selection.sceneId} />
       <BlockSection layer={layer} />
       <MotionSection layer={layer} />
@@ -202,6 +221,9 @@ function RunEditor({
   const palette = useEditorStore((s) => s.state?.design.direction.palette ?? ['#FFFFFF']);
 
   const applyRunStyleToVoice = useEditorStore((s) => s.applyRunStyleToVoice);
+  const applyRunStyleAcross = useEditorStore((s) => s.applyRunStyleAcross);
+  const selectedIds = useEditorStore((s) => s.selection.layerIds);
+  const multi = selectedIds.length > 1;
 
   const [fontOpen, setFontOpen] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
@@ -215,8 +237,29 @@ function RunEditor({
    * the previous behaviour; with it on the same edit is committed everywhere in
    * one step, which keeps it to a single undo.
    */
-  const apply = (patch: Partial<TextRun>) => {
-    if (applyToAll) applyRunStyleToVoice(layer.id, run.id, patch);
+  /*
+   * Three scopes, narrowest first:
+   *
+   *   this run                     - one caption selected, checkbox off
+   *   every selected caption       - several selected (that is the point of
+   *                                  selecting them)
+   *   every caption in this voice  - checkbox on, project-wide
+   *
+   * All of them stay inside the run's own emphasis, so a hero script never
+   * lands on the base words carrying the sentence - that contrast is the whole
+   * look, and flattening it is not something a font change should do quietly.
+   */
+  const apply = (patch: Partial<TextRun>, caseMode?: TextRun['textTransform']) => {
+    if (applyToAll) {
+      applyRunStyleToVoice(layer.id, run.id, patch);
+      if (caseMode) applyRunStyleAcross(selectedIds, run.emphasis, patch, caseMode);
+      return;
+    }
+    if (multi) {
+      applyRunStyleAcross(selectedIds, run.emphasis, patch, caseMode);
+      return;
+    }
+    if (caseMode) setRunCase(layer.id, run.id, caseMode);
     else updateRun(layer.id, run.id, patch);
   };
 
@@ -316,7 +359,7 @@ function RunEditor({
           <Field label="Case">
             <SegmentedControl
               value={run.textTransform}
-              onChange={(mode) => setRunCase(layer.id, run.id, mode)}
+              onChange={(mode) => apply({}, mode)}
               options={CASE_OPTIONS}
             />
           </Field>
@@ -406,6 +449,54 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
   const updateLayer = useEditorStore((s) => s.updateLayer);
   const frameH = useEditorStore((s) => s.state?.project.height ?? 1920);
   const palette = useEditorStore((s) => s.state?.design.direction.palette ?? ['#FFFFFF']);
+  const updateLayers = useEditorStore((s) => s.updateLayers);
+  const selectedIds = useEditorStore((s) => s.selection.layerIds);
+  const allLayers = useEditorStore((s) => {
+    const map = new Map<string, CaptionLayer>();
+    for (const sc of s.state?.design.scenes ?? []) for (const l of sc.layers) map.set(l.id, l);
+    return map;
+  });
+
+  const targets = selectedIds.length > 1 ? selectedIds : [layer.id];
+  const multi = targets.length > 1;
+
+  /*
+   * Absolute edits: everyone gets the same value.
+   *
+   * Right for anything describing how a caption looks - shadow, opacity,
+   * alignment, animation, wrap width. Setting five captions to the same shadow
+   * is exactly what dragging the shadow slider should mean.
+   */
+  const patchLayer = (patch: Partial<CaptionLayer>) => {
+    if (!multi) return updateLayer(layer.id, patch);
+    updateLayers(targets.map((id) => ({ layerId: id, patch })));
+  };
+
+  /*
+   * Relative edits: everyone shifts by the same amount.
+   *
+   * Required for anything positional or temporal. Writing an absolute x to
+   * five captions stacks them on one spot, and an absolute startMs collapses
+   * them into one instant - destroying the arrangement that selecting them
+   * together was meant to preserve. The primary's change sets the delta.
+   */
+  const shiftLayers = <K extends 'x' | 'y' | 'startMs' | 'endMs' | 'zIndex'>(
+    key: K,
+    next: number,
+    bound: (value: number, l: CaptionLayer) => number,
+  ) => {
+    if (!multi) return updateLayer(layer.id, { [key]: bound(next, layer) } as Partial<CaptionLayer>);
+    const delta = next - (layer[key] as number);
+    updateLayers(
+      targets.map((id) => {
+        const target = allLayers.get(id) ?? layer;
+        return {
+          layerId: id,
+          patch: { [key]: bound((target[key] as number) + delta, target) } as Partial<CaptionLayer>,
+        };
+      }),
+    );
+  };
 
   const bg = layer.background;
 
@@ -416,13 +507,13 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
           <NumberField
             label="X"
             value={layer.x * 100}
-            onChange={(v) => updateLayer(layer.id, { x: v / 100 })}
+            onChange={(v) => shiftLayers('x', v / 100, (value) => clampUnitish(value))}
             min={-10} max={110} step={0.5} precision={1} suffix="%"
           />
           <NumberField
             label="Y"
             value={layer.y * 100}
-            onChange={(v) => updateLayer(layer.id, { y: v / 100 })}
+            onChange={(v) => shiftLayers('y', v / 100, (value) => clampUnitish(value))}
             min={-10} max={110} step={0.5} precision={1} suffix="%"
           />
         </div>
@@ -430,21 +521,21 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
         <NumberField
           label="Size"
           value={layer.fontSize * frameH}
-          onChange={(v) => updateLayer(layer.id, { fontSize: v / frameH })}
+          onChange={(v) => patchLayer({ fontSize: v / frameH })}
           min={10} max={frameH * 0.3} step={1} suffix="px"
         />
 
         <NumberField
           label="Rotate"
           value={layer.rotation}
-          onChange={(rotation) => updateLayer(layer.id, { rotation })}
+          onChange={(rotation) => patchLayer({ rotation })}
           min={-180} max={180} step={1} suffix="°"
         />
 
         <Field label="Align">
           <SegmentedControl
             value={layer.textAlign}
-            onChange={(textAlign) => updateLayer(layer.id, { textAlign })}
+            onChange={(textAlign) => patchLayer({ textAlign })}
             options={[
               { value: 'left', label: 'Left' },
               { value: 'center', label: 'Centre' },
@@ -456,7 +547,7 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
         <Slider
           label="Line spacing"
           value={layer.lineHeight}
-          onChange={(lineHeight) => updateLayer(layer.id, { lineHeight })}
+          onChange={(lineHeight) => patchLayer({ lineHeight })}
           min={0.55} max={2.2} step={0.01}
           format={(v) => (v < 1 ? `${v.toFixed(2)} (tight)` : v.toFixed(2))}
         />
@@ -464,7 +555,7 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
         <Slider
           label="Wrap width"
           value={layer.maxWidth}
-          onChange={(maxWidth) => updateLayer(layer.id, { maxWidth })}
+          onChange={(maxWidth) => patchLayer({ maxWidth })}
           min={0.15} max={1} step={0.01}
           format={(v) => `${Math.round(v * 100)}%`}
         />
@@ -472,14 +563,14 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
         <Slider
           label="Shadow"
           value={layer.shadow}
-          onChange={(shadow) => updateLayer(layer.id, { shadow })}
+          onChange={(shadow) => patchLayer({ shadow })}
           format={(v) => (v < 0.05 ? 'off' : `${Math.round(v * 100)}%`)}
         />
 
         <Slider
           label="Opacity"
           value={layer.opacity}
-          onChange={(opacity) => updateLayer(layer.id, { opacity })}
+          onChange={(opacity) => patchLayer({ opacity })}
           format={(v) => `${Math.round(v * 100)}%`}
         />
 
@@ -489,7 +580,7 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
           label="Backing plate"
           checked={Boolean(bg)}
           onChange={(on) =>
-            updateLayer(layer.id, {
+            patchLayer({
               background: on
                 ? { color: '#000000', opacity: 0.35, paddingX: 0.35, paddingY: 0.22, radius: 0.12 }
                 : null,
@@ -502,28 +593,28 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
             <Slider
               label="Plate opacity"
               value={bg.opacity}
-              onChange={(opacity) => updateLayer(layer.id, { background: { ...bg, opacity } })}
+              onChange={(opacity) => patchLayer({ background: { ...bg, opacity } })}
               format={(v) => `${Math.round(v * 100)}%`}
             />
             <Slider
               label="Padding"
               value={bg.paddingX}
               onChange={(paddingX) =>
-                updateLayer(layer.id, { background: { ...bg, paddingX, paddingY: paddingX * 0.65 } })
+                patchLayer({ background: { ...bg, paddingX, paddingY: paddingX * 0.65 } })
               }
               min={0} max={1} step={0.02}
             />
             <Slider
               label="Corner"
               value={bg.radius}
-              onChange={(radius) => updateLayer(layer.id, { background: { ...bg, radius } })}
+              onChange={(radius) => patchLayer({ background: { ...bg, radius } })}
               min={0} max={0.5} step={0.01}
             />
             <Field label="Plate colour">
               <ColorPicker
                 value={bg.color}
                 palette={['#000000', '#FFFFFF', ...palette]}
-                onChange={(color) => updateLayer(layer.id, { background: { ...bg, color } })}
+                onChange={(color) => patchLayer({ background: { ...bg, color } })}
               />
             </Field>
           </div>
@@ -539,6 +630,44 @@ function BlockSection({ layer }: { layer: CaptionLayer }) {
 
 function MotionSection({ layer }: { layer: CaptionLayer }) {
   const updateLayer = useEditorStore((s) => s.updateLayer);
+  const updateLayers = useEditorStore((s) => s.updateLayers);
+  const selectedIds = useEditorStore((s) => s.selection.layerIds);
+  const allLayers = useEditorStore((s) => {
+    const map = new Map<string, CaptionLayer>();
+    for (const sc of s.state?.design.scenes ?? []) for (const l of sc.layers) map.set(l.id, l);
+    return map;
+  });
+
+  const targets = selectedIds.length > 1 ? selectedIds : [layer.id];
+  const multi = targets.length > 1;
+
+  // Animation and its duration are stylistic: every selected caption gets the
+  // same one, which is the point of setting it on a group.
+  const patchLayer = (patch: Partial<CaptionLayer>) => {
+    if (!multi) return updateLayer(layer.id, patch);
+    updateLayers(targets.map((id) => ({ layerId: id, patch })));
+  };
+
+  // Timing is not. Absolute start and end would collapse every selected
+  // caption onto one instant, so these shift by the primary's delta and the
+  // group keeps its rhythm.
+  const shiftLayers = <K extends 'startMs' | 'endMs'>(
+    key: K,
+    next: number,
+    bound: (value: number, l: CaptionLayer) => number,
+  ) => {
+    if (!multi) return updateLayer(layer.id, { [key]: bound(next, layer) } as Partial<CaptionLayer>);
+    const delta = next - (layer[key] as number);
+    updateLayers(
+      targets.map((id) => {
+        const target = allLayers.get(id) ?? layer;
+        return {
+          layerId: id,
+          patch: { [key]: bound((target[key] as number) + delta, target) } as Partial<CaptionLayer>,
+        };
+      }),
+    );
+  };
   const setTime = useEditorStore((s) => s.setTime);
   const duration = useEditorStore((s) => s.state?.project.durationMs ?? 0);
 
@@ -551,7 +680,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
           <Select
             value={layer.enterAnimation}
             onChange={(enterAnimation) =>
-              updateLayer(layer.id, {
+              patchLayer({
                 enterAnimation,
                 enterDurationMs: getAnimation(enterAnimation).defaultMs,
               })
@@ -563,7 +692,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
         <NumberField
           label="In time"
           value={layer.enterDurationMs}
-          onChange={(enterDurationMs) => updateLayer(layer.id, { enterDurationMs })}
+          onChange={(enterDurationMs) => patchLayer({ enterDurationMs })}
           min={0} max={4000} step={20} suffix="ms"
         />
 
@@ -571,7 +700,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
           <Select
             value={layer.exitAnimation}
             onChange={(exitAnimation) =>
-              updateLayer(layer.id, {
+              patchLayer({
                 exitAnimation,
                 exitDurationMs: getAnimation(exitAnimation).defaultMs,
               })
@@ -583,7 +712,7 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
         <NumberField
           label="Out time"
           value={layer.exitDurationMs}
-          onChange={(exitDurationMs) => updateLayer(layer.id, { exitDurationMs })}
+          onChange={(exitDurationMs) => patchLayer({ exitDurationMs })}
           min={0} max={4000} step={20} suffix="ms"
         />
 
@@ -591,13 +720,19 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
           <NumberField
             label="Start"
             value={layer.startMs}
-            onChange={(startMs) => updateLayer(layer.id, { startMs: Math.min(startMs, layer.endMs - 100) })}
+            onChange={(startMs) =>
+              shiftLayers('startMs', startMs, (value, l) =>
+                Math.max(0, Math.min(value, l.endMs - 100)),
+              )
+            }
             min={0} max={duration} step={10} suffix="ms"
           />
           <NumberField
             label="End"
             value={layer.endMs}
-            onChange={(endMs) => updateLayer(layer.id, { endMs: Math.max(endMs, layer.startMs + 100) })}
+            onChange={(endMs) =>
+              shiftLayers('endMs', endMs, (value, l) => Math.max(value, l.startMs + 100))
+            }
             min={0} max={duration} step={10} suffix="ms"
           />
         </div>
@@ -610,10 +745,37 @@ function MotionSection({ layer }: { layer: CaptionLayer }) {
   );
 }
 
+/** Same bounds the canvas drag uses, so the two agree on how far off-frame a
+ *  caption may sit. */
+const clampUnitish = (value: number): number => Math.min(1.1, Math.max(-0.1, value));
+
 function LayerActions({ layer }: { layer: CaptionLayer }) {
   const duplicateLayer = useEditorStore((s) => s.duplicateLayer);
   const deleteLayer = useEditorStore((s) => s.deleteLayer);
   const updateLayer = useEditorStore((s) => s.updateLayer);
+  const updateLayers = useEditorStore((s) => s.updateLayers);
+  const selectedIds = useEditorStore((s) => s.selection.layerIds);
+  const allLayers = useEditorStore((s) => {
+    const map = new Map<string, CaptionLayer>();
+    for (const sc of s.state?.design.scenes ?? []) for (const l of sc.layers) map.set(l.id, l);
+    return map;
+  });
+
+  const targets = selectedIds.length > 1 ? selectedIds : [layer.id];
+  const multi = targets.length > 1;
+
+  // Stacking order shifts by the same step for everyone, so a group keeps its
+  // internal front-to-back order instead of flattening onto one level.
+  const shiftZ = (next: number) => {
+    if (!multi) return updateLayer(layer.id, { zIndex: Math.max(0, Math.min(99, next)) });
+    const delta = next - layer.zIndex;
+    updateLayers(
+      targets.map((id) => {
+        const target = allLayers.get(id) ?? layer;
+        return { layerId: id, patch: { zIndex: Math.max(0, Math.min(99, target.zIndex + delta)) } };
+      }),
+    );
+  };
 
   return (
     <Section title="Layer">
@@ -623,12 +785,12 @@ function LayerActions({ layer }: { layer: CaptionLayer }) {
         <NumberField
           label="Layer"
           value={layer.zIndex}
-          onChange={(zIndex) => updateLayer(layer.id, { zIndex })}
+          onChange={(zIndex) => shiftZ(zIndex)}
           min={0} max={99} step={1}
         />
         <button
           className="btn-outline"
-          onClick={() => updateLayer(layer.id, { zIndex: layer.zIndex + 1 })}
+          onClick={() => shiftZ(layer.zIndex + 1)}
         >
           Bring forward
         </button>

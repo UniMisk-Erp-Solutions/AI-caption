@@ -43,7 +43,17 @@ export type SaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'error';
 
 interface Selection {
   sceneId: string | null;
+  /**
+   * The primary layer: the one the inspector edits and the one that carries
+   * the transform handles. Always the last one added to `layerIds`, or null.
+   */
   layerId: string | null;
+  /**
+   * Everything selected, primary included. Kept alongside `layerId` rather
+   * than replacing it so every existing single-selection path keeps working
+   * unchanged - a lone selection is just a set of one.
+   */
+  layerIds: string[];
   runId: string | null;
 }
 
@@ -79,6 +89,28 @@ interface EditorStore {
 
   /* mutations */
   updateLayer(layerId: string, patch: Partial<CaptionLayer>, options?: { transient?: boolean }): void;
+  /**
+   * Patch several layers in one commit. A group drag must not become one undo
+   * entry per layer per frame, and partially-applied moves must never be
+   * observable between them.
+   */
+  updateLayers(
+    patches: Array<{ layerId: string; patch: Partial<CaptionLayer> }>,
+    options?: { transient?: boolean },
+  ): void;
+  /**
+   * Apply a typographic patch to matching runs across several layers.
+   * `emphasis` narrows it to one voice; null means every run in those layers.
+   * `caseMode` re-derives text from rawText, so case travels losslessly.
+   */
+  applyRunStyleAcross(
+    layerIds: string[],
+    emphasis: TextRun['emphasis'] | null,
+    patch: Partial<TextRun>,
+    caseMode?: TextRun['textTransform'],
+  ): void;
+  /** Add or remove a layer from the selection, for shift-click. */
+  toggleLayerSelected(sceneId: string | null, layerId: string): void;
   updateRun(layerId: string, runId: string, patch: Partial<TextRun>): void;
   setRunCase(layerId: string, runId: string, mode: TextTransform): void;
   setRunText(layerId: string, runId: string, text: string): void;
@@ -204,7 +236,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
     state: null,
     past: [],
     future: [],
-    selection: { sceneId: null, layerId: null, runId: null },
+    selection: { sceneId: null, layerId: null, layerIds: [], runId: null },
     timeMs: 0,
     playing: false,
     saveStatus: 'idle',
@@ -216,7 +248,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
         state,
         past: [],
         future: [],
-        selection: { sceneId: state.design.scenes[0]?.id ?? null, layerId: null, runId: null },
+        selection: { sceneId: state.design.scenes[0]?.id ?? null, layerId: null, layerIds: [], runId: null },
         timeMs: 0,
         playing: false,
         saveStatus: 'saved',
@@ -232,7 +264,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
         state: null,
         past: [],
         future: [],
-        selection: { sceneId: null, layerId: null, runId: null },
+        selection: { sceneId: null, layerId: null, layerIds: [], runId: null },
         timeMs: 0,
         playing: false,
         saveStatus: 'idle',
@@ -248,7 +280,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
     },
 
     select(sceneId, layerId = null, runId = null) {
-      set({ selection: { sceneId, layerId, runId } });
+      set({ selection: { sceneId, layerId, layerIds: layerId ? [layerId] : [], runId } });
     },
 
     canUndo: () => get().past.length > 0,
@@ -279,6 +311,102 @@ export const useEditorStore = create<EditorStore>((set, get) => {
         ),
         options,
       );
+    },
+
+    updateLayers(patches, options) {
+      const { state } = get();
+      if (!state || patches.length === 0) return;
+
+      const byId = new Map(patches.map((p) => [p.layerId, p.patch]));
+      commit(
+        {
+          ...state,
+          design: {
+            ...state.design,
+            scenes: state.design.scenes.map((scene) => {
+              if (!scene.layers.some((l) => byId.has(l.id))) return scene;
+              return {
+                ...scene,
+                layers: scene.layers.map((layer) => {
+                  const patch = byId.get(layer.id);
+                  return patch
+                    ? captionLayerSchema.parse({ ...layer, ...patch, locked: true })
+                    : layer;
+                }),
+              };
+            }),
+          },
+        },
+        options,
+      );
+    },
+
+    applyRunStyleAcross(layerIds, emphasis, patch, caseMode) {
+      const { state } = get();
+      if (!state || layerIds.length === 0) return;
+
+      const ids = new Set(layerIds);
+      const wordsById = new Map(state.transcript.words.map((w) => [w.id, w]));
+
+      commit({
+        ...state,
+        design: {
+          ...state.design,
+          scenes: state.design.scenes.map((scene) => {
+            if (!scene.layers.some((l) => ids.has(l.id))) return scene;
+            return {
+              ...scene,
+              layers: scene.layers.map((layer) => {
+                if (!ids.has(layer.id)) return layer;
+                return {
+                  ...layer,
+                  locked: true,
+                  runs: layer.runs.map((run) => {
+                    if (emphasis !== null && run.emphasis !== emphasis) return run;
+                    const next = { ...run, ...patch };
+                    if (!caseMode) return next;
+                    // Case is derived, never transformed in place: going
+                    // upper -> title -> upper reads from rawText each time, so
+                    // "New York" survives a round trip that uppercasing the
+                    // already-uppercased text would destroy.
+                    const raw =
+                      next.rawText ||
+                      run.wordIds.map((id) => wordsById.get(id)?.text ?? '').join(' ').trim() ||
+                      run.text;
+                    return {
+                      ...next,
+                      rawText: raw,
+                      textTransform: caseMode,
+                      text: applyCase(raw, caseMode),
+                    };
+                  }),
+                };
+              }),
+            };
+          }),
+        },
+      });
+    },
+
+    toggleLayerSelected(sceneId, layerId) {
+      const { selection } = get();
+      const present = selection.layerIds.includes(layerId);
+      const layerIds = present
+        ? selection.layerIds.filter((id) => id !== layerId)
+        : [...selection.layerIds, layerId];
+
+      set({
+        selection: {
+          // Keep the scene of whatever is still primary, so the inspector and
+          // the scene strip do not jump while building a selection.
+          sceneId: layerIds.length > 0 ? (sceneId ?? selection.sceneId) : selection.sceneId,
+          // The most recently added survivor leads; removing the primary
+          // promotes the previous one rather than clearing everything.
+          layerId: layerIds.length > 0 ? layerIds[layerIds.length - 1] : null,
+          layerIds,
+          runId: null,
+        },
+      });
     },
 
     updateRun(layerId, runId, patch) {
@@ -521,7 +649,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
       if (!state) return;
       commit(mapScenes(state, (scene) => ({ ...scene, layers: scene.layers.filter((l) => l.id !== layerId) })));
       if (selection.layerId === layerId) {
-        set({ selection: { ...selection, layerId: null, runId: null } });
+        set({ selection: { ...selection, layerId: null, layerIds: [], runId: null } });
       }
     },
 
@@ -580,7 +708,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
       });
 
       commit(mapScenes(state, (s) => (s.id === sceneId ? { ...s, layers: [...s.layers, layer] } : s)));
-      set({ selection: { sceneId, layerId, runId: null } });
+      set({ selection: { sceneId, layerId, layerIds: layerId ? [layerId] : [], runId: null } });
     },
 
     /**
@@ -964,7 +1092,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
       // The selected layer may have just been emptied out of existence.
       const stillThere = scenes.some((s) => s.layers.some((l) => l.id === selection.layerId));
       if (selection.layerId && !stillThere) {
-        set({ selection: { ...selection, layerId: null, runId: null } });
+        set({ selection: { ...selection, layerId: null, layerIds: [], runId: null } });
       }
     },
 

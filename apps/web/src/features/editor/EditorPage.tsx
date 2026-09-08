@@ -158,9 +158,13 @@ export function EditorPage() {
           break;
         case 'Delete':
         case 'Backspace':
-          if (store.selection.layerId) {
+          if (store.selection.layerIds.length > 0) {
             event.preventDefault();
-            store.deleteLayer(store.selection.layerId);
+            // Delete acts on everything selected. Copied first because each
+            // delete rewrites the selection underneath us.
+            for (const id of [...store.selection.layerIds]) {
+              useEditorStore.getState().deleteLayer(id);
+            }
           }
           break;
         case 'Escape':

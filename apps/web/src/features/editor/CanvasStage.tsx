@@ -32,9 +32,42 @@ interface Props {
 
 type DragMode =
   | { kind: 'none' }
-  | { kind: 'move'; layerId: string; grabX: number; grabY: number; originX: number; originY: number }
-  | { kind: 'scale'; layerId: string; startSize: number; startDist: number }
-  | { kind: 'rotate'; layerId: string; centerX: number; centerY: number; startAngle: number; startRotation: number };
+  /*
+   * Every mode carries the starting state of the whole selection, not just the
+   * layer under the cursor.
+   *
+   * Transforms are applied as one delta computed from the primary layer and
+   * then handed unchanged to every member, rather than each member being
+   * recomputed from the pointer. That is what keeps relative spacing exact: a
+   * per-layer recomputation accumulates rounding and drifts the arrangement
+   * apart over a long drag, which is precisely the alignment this is meant to
+   * preserve. Snapping is likewise resolved once, on the primary.
+   */
+  | {
+      kind: 'move';
+      layerId: string;
+      grabX: number;
+      grabY: number;
+      originX: number;
+      originY: number;
+      origins: Array<{ layerId: string; x: number; y: number }>;
+    }
+  | {
+      kind: 'scale';
+      layerId: string;
+      startSize: number;
+      startDist: number;
+      sizes: Array<{ layerId: string; fontSize: number }>;
+    }
+  | {
+      kind: 'rotate';
+      layerId: string;
+      centerX: number;
+      centerY: number;
+      startAngle: number;
+      startRotation: number;
+      rotations: Array<{ layerId: string; rotation: number }>;
+    };
 
 export function CanvasStage({ videoUrl, className }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -51,6 +84,8 @@ export function CanvasStage({ videoUrl, className }: Props) {
   const setPlaying = useEditorStore((s) => s.setPlaying);
   const select = useEditorStore((s) => s.select);
   const updateLayer = useEditorStore((s) => s.updateLayer);
+  const updateLayers = useEditorStore((s) => s.updateLayers);
+  const toggleLayerSelected = useEditorStore((s) => s.toggleLayerSelected);
   const scene = useActiveScene();
 
   const [box, setBox] = useState({ width: 0, height: 0 });
@@ -205,9 +240,30 @@ export function CanvasStage({ videoUrl, className }: Props) {
       return;
     }
 
-    // Select the scene that owns the layer, which is not necessarily the one
-    // under the playhead now that layers can outlive their scene.
-    select(sceneOfLayer(state, layer.id)?.id ?? null, layer.id);
+    const owningSceneId = sceneOfLayer(state, layer.id)?.id ?? null;
+
+    // Shift-click builds a selection instead of replacing it, and deliberately
+    // starts no drag: the gesture is "also this one", and moving the group on
+    // the same press would make a mis-click hard to undo.
+    if (event.shiftKey) {
+      toggleLayerSelected(owningSceneId, layer.id);
+      return;
+    }
+
+    // Clicking a layer that is already part of a multi-selection keeps that
+    // selection and drags the group. Without this, grabbing one of several
+    // selected captions would silently collapse the selection to it.
+    const inSelection = selection.layerIds.includes(layer.id);
+    if (!inSelection) select(owningSceneId, layer.id);
+
+    const groupIds = inSelection && selection.layerIds.length > 1 ? selection.layerIds : [layer.id];
+    const origins = groupIds
+      .map((id) => {
+        const member = findLayer(id);
+        return member ? { layerId: id, x: member.x, y: member.y } : null;
+      })
+      .filter((o): o is { layerId: string; x: number; y: number } => o !== null);
+
     (event.target as Element).setPointerCapture(event.pointerId);
     dragRef.current = {
       kind: 'move',
@@ -216,6 +272,7 @@ export function CanvasStage({ videoUrl, className }: Props) {
       grabY: point.y,
       originX: layer.x,
       originY: layer.y,
+      origins,
     };
   };
 
@@ -229,28 +286,50 @@ export function CanvasStage({ videoUrl, className }: Props) {
       let x = drag.originX + (point.x - drag.grabX);
       let y = drag.originY + (point.y - drag.grabY);
 
-      // Snap to the thirds and centre lines unless shift is held.
+      // Snap the primary to the thirds and centre lines unless shift is held.
+      // Shift is also the multi-select modifier, but it cannot be held during a
+      // move - shift-click never starts one - so the two never collide.
       if (!event.shiftKey) {
         x = snap(x, [0.5, 1 / 3, 2 / 3, 0.1, 0.9], 0.012);
         y = snap(y, [0.5, 1 / 3, 2 / 3, 0.25, 0.75], 0.012);
       }
 
+      // The snapped primary defines the delta; everyone moves by exactly that,
+      // so the arrangement is rigid and one caption snapping carries the rest
+      // with it rather than closing the gap between them.
+      const dx = x - drag.originX;
+      const dy = y - drag.originY;
+
       // transient: a drag emits dozens of updates and only the last one should
       // become an undo step.
-      updateLayer(drag.layerId, { x: clamp(x, -0.1, 1.1), y: clamp(y, -0.1, 1.1) }, { transient: true });
+      updateLayers(
+        drag.origins.map((origin) => ({
+          layerId: origin.layerId,
+          patch: {
+            x: clamp(origin.x + dx, -0.1, 1.1),
+            y: clamp(origin.y + dy, -0.1, 1.1),
+          },
+        })),
+        { transient: true },
+      );
       return;
     }
 
     if (drag.kind === 'scale') {
       const layer = findLayer(drag.layerId);
       if (!layer) return;
-      const ctx = measuringCtx();
-      if (!ctx) return;
       const dist = Math.hypot(point.x - layer.x, (point.y - layer.y) * (frameH / frameW));
       const ratio = dist / Math.max(0.001, drag.startDist);
-      updateLayer(
-        drag.layerId,
-        { fontSize: clamp(drag.startSize * ratio, 0.012, 0.3) },
+
+      // One ratio for the whole group, applied to each layer's own starting
+      // size. Anchors are left alone: scaling positions about a centroid would
+      // move captions the user had placed, and relative size is what "resize
+      // them together" actually means here.
+      updateLayers(
+        drag.sizes.map((entry) => ({
+          layerId: entry.layerId,
+          patch: { fontSize: clamp(entry.fontSize * ratio, 0.012, 0.3) },
+        })),
         { transient: true },
       );
       return;
@@ -260,7 +339,15 @@ export function CanvasStage({ videoUrl, className }: Props) {
       const angle = Math.atan2(point.y - drag.centerY, point.x - drag.centerX);
       let degrees = drag.startRotation + ((angle - drag.startAngle) * 180) / Math.PI;
       if (!event.shiftKey) degrees = Math.round(degrees / 5) * 5;
-      updateLayer(drag.layerId, { rotation: clamp(degrees, -180, 180) }, { transient: true });
+      const delta = degrees - drag.startRotation;
+
+      updateLayers(
+        drag.rotations.map((entry) => ({
+          layerId: entry.layerId,
+          patch: { rotation: clamp(entry.rotation + delta, -180, 180) },
+        })),
+        { transient: true },
+      );
     }
   };
 
@@ -269,10 +356,34 @@ export function CanvasStage({ videoUrl, className }: Props) {
     dragRef.current = { kind: 'none' };
     if (drag.kind === 'none') return;
 
-    // Re-commit the final value without `transient`, so the whole drag collapses
-    // into exactly one undo entry.
-    const layer = findLayer(drag.layerId);
-    if (layer) updateLayer(layer.id, { x: layer.x, y: layer.y });
+    // Re-commit the settled values without `transient`, so the whole drag
+    // collapses into exactly one undo entry - for every layer that moved, not
+    // just the one under the cursor.
+    const ids =
+      drag.kind === 'move'
+        ? drag.origins.map((o) => o.layerId)
+        : drag.kind === 'scale'
+          ? drag.sizes.map((e) => e.layerId)
+          : drag.rotations.map((e) => e.layerId);
+
+    const patches = ids
+      .map((id) => {
+        const layer = findLayer(id);
+        return layer
+          ? {
+              layerId: id,
+              patch: {
+                x: layer.x,
+                y: layer.y,
+                fontSize: layer.fontSize,
+                rotation: layer.rotation,
+              },
+            }
+          : null;
+      })
+      .filter((p): p is NonNullable<typeof p> => p !== null);
+
+    if (patches.length > 0) updateLayers(patches);
   };
 
   function findLayer(layerId: string): CaptionLayer | null {
@@ -306,6 +417,30 @@ export function CanvasStage({ videoUrl, className }: Props) {
     if (!ctx || !selectedLayer || !selectionVisible) return null;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     return measureLayerRect(ctx, selectedLayer, frameW, frameH);
+  })();
+
+  /*
+   * Everything selected, in selection order, skipping anything that has since
+   * been deleted. Transform handles act on this whole set, so it has to be
+   * resolved from ids each render rather than captured once.
+   */
+  const selectedGroup = selection.layerIds
+    .map((id) => findLayer(id))
+    .filter((l): l is CaptionLayer => l !== null);
+
+  /*
+   * Outlines for the other members. Only the primary gets handles - a group
+   * needs one place to grab, and drawing scale and rotate affordances on every
+   * member would suggest they each transform alone. Same visibility rule as the
+   * primary: a box over text that is not on screen is a box over bare video.
+   */
+  const companionRects = (() => {
+    const ctx = measuringCtx();
+    if (!ctx || selectedGroup.length < 2) return [];
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return selectedGroup
+      .filter((l) => l.id !== selection.layerId && timeMs >= l.startMs && timeMs <= l.endMs)
+      .map((l) => ({ id: l.id, rotation: l.rotation, rect: measureLayerRect(ctx, l, frameW, frameH) }));
   })();
 
   return (
@@ -346,6 +481,21 @@ export function CanvasStage({ videoUrl, className }: Props) {
           onDoubleClick={onDoubleClick}
         />
 
+        {!editing &&
+          companionRects.map(({ id, rect, rotation }) => (
+            <div
+              key={id}
+              className="pointer-events-none absolute rounded-[2px] border border-dashed border-accent/70"
+              style={{
+                left: `${rect.x * 100}%`,
+                top: `${rect.y * 100}%`,
+                width: `${rect.width * 100}%`,
+                height: `${rect.height * 100}%`,
+                transform: `rotate(${rotation}deg)`,
+              }}
+            />
+          ))}
+
         {selectionRect && !editing && (
           <SelectionFrame
             rect={selectionRect}
@@ -361,6 +511,7 @@ export function CanvasStage({ videoUrl, className }: Props) {
                   point.x - selectedLayer.x,
                   (point.y - selectedLayer.y) * (frameH / frameW),
                 ),
+                sizes: selectedGroup.map((l) => ({ layerId: l.id, fontSize: l.fontSize })),
               };
             }}
             onRotateStart={(event) => {
@@ -375,6 +526,7 @@ export function CanvasStage({ videoUrl, className }: Props) {
                 centerY: cy,
                 startAngle: Math.atan2(point.y - cy, point.x - cx),
                 startRotation: selectedLayer.rotation,
+                rotations: selectedGroup.map((l) => ({ layerId: l.id, rotation: l.rotation })),
               };
             }}
             onPointerMove={onPointerMove}
