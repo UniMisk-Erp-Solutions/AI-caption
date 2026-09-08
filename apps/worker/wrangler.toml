@@ -16,8 +16,13 @@ compatibility_flags = ["nodejs_compat"]
 ALLOWED_ORIGIN = "http://localhost:5173,https://ai-reel-caption-seven.vercel.app"
 R2_BUCKET_NAME = "caption-ai-media"
 
-# Which storage backend to use. Omit to infer from whichever keys are present.
-# STORAGE_PROVIDER = "immich"
+# Plain-text vars set in the dashboard are REPLACED by this block on every
+# `wrangler deploy`, so anything that must survive a deploy belongs here.
+# Both of these have safe fallbacks in code (the provider is inferred from the
+# Immich keys, the album prefix defaults to "Kinetic"), but pinning them keeps
+# a deploy from quietly changing behaviour.
+STORAGE_PROVIDER = "immich"
+IMMICH_ALBUM_PREFIX = "Kinetic"
 
 # Secrets - set with `wrangler secret put <NAME>`, never in this file.
 #
