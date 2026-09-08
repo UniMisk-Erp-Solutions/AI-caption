@@ -952,3 +952,50 @@ function shadowFor(
 function mean(values: number[]): number {
   return values.length === 0 ? 0.5 : values.reduce((a, b) => a + b, 0) / values.length;
 }
+
+/**
+ * Re-set an existing run in a new preset's voice, without moving anything.
+ *
+ * Swapping style used to run the whole designer again, which rebuilt every
+ * layer from scratch - so any position, alignment or animation the user had
+ * chosen was discarded and the captions snapped back to centre. Trying a
+ * different look therefore cost all the work done since.
+ *
+ * This changes only what the preset actually governs: which faces are used, how
+ * they are weighted, cased, tracked and coloured. Geometry, timing, animation
+ * and the words themselves belong to the layer and are left untouched, so
+ * picking a style is a reversible experiment rather than a reset.
+ *
+ * `rawText` is the source of truth for case, which is why case can be
+ * re-applied here repeatedly without the text degrading - going from upper to
+ * title to upper reads from the original every time.
+ */
+export function restyleRun(
+  run: TextRun,
+  preset: PresetDef,
+  dir: ArtDirection,
+  isFirst: boolean,
+): TextRun {
+  const voice = resolveVoice(preset, run.emphasis, dir);
+  const font = getFont(voice.fontId);
+  const raw = run.rawText || run.text;
+  const tuck = font.role === 'script' ? -0.14 : font.role === 'didone' ? -0.03 : 0;
+
+  return textRunSchema.parse({
+    ...run,
+    fontId: voice.fontId,
+    fontWeight: resolveWeight(voice.fontId, voice.weight),
+    italic: voice.italic && font.italic,
+    sizeScale: voice.sizeScale * (run.emphasis === 'hero' ? dir.heroContrast : 1),
+    letterSpacing: voice.tracking + font.defaultTracking,
+    baselineShift: voice.baselineShift,
+    color: dir.palette[Math.min(2, Math.max(0, voice.colorIndex))] ?? '#FFFFFF',
+    rawText: raw,
+    text: applyCase(raw, voice.textTransform, isFirst),
+    textTransform: voice.textTransform,
+    // Tuck is a property of the face beside its neighbour, so it follows the
+    // new font rather than surviving from the old one.
+    tuckBefore: isFirst ? 0 : tuck,
+    tuckAfter: tuck,
+  });
+}

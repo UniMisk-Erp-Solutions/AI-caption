@@ -108,7 +108,9 @@ export function Timeline({ waveform }: Props) {
       {/* tracks */}
       <div
         ref={trackRef}
-        className="relative flex-1 cursor-text select-none overflow-hidden px-4 py-2"
+        // touch-none, or on a phone a drag scrolls the page instead of
+        // scrubbing and the timeline is effectively read-only.
+        className="relative flex-1 cursor-text touch-none select-none overflow-hidden px-4 py-2"
         onPointerDown={(e) => {
           setScrubbing(true);
           seekFromEvent(e.clientX);
@@ -195,11 +197,15 @@ type LayerDrag = {
  * The editable layer track.
  *
  * Bars can be dragged along the track, trimmed from either edge, selected and
- * deleted - the operations any timeline is expected to have. Everything is
- * clamped inside the parent scene, because `renderFrame` only ever draws the
- * layers of the scene under the playhead: time granted to a layer outside its
- * scene is time it can never appear in, so allowing it would silently produce
- * captions that never show.
+ * deleted - the operations any timeline is expected to have, over the whole
+ * clip rather than only inside the parent scene.
+ *
+ * That freedom is only safe because visibility is decided per layer: the
+ * renderer draws any layer whose own window contains the playhead, from any
+ * scene. While it was scene-scoped, time granted outside the parent scene was
+ * time the caption could never appear in, so the track had to clamp to the
+ * scene or it would have produced captions that silently never showed. Now the
+ * only real boundary is the clip itself.
  */
 function LayerTrack({
   scene,
@@ -291,21 +297,20 @@ function LayerTrack({
       let startMs = drag.fromMs;
       let endMs = drag.toMs;
 
+      // The clip is the only hard boundary. Scene edges remain as snap targets
+      // below, so they still guide a drag without trapping it.
       if (drag.kind === 'move') {
         const span = drag.toMs - drag.fromMs;
         startMs = snap(drag.fromMs + deltaMs, snapping);
-        // Keep the length exactly - a move must never resize. `maxStart` floors
-        // at the scene start so a layer longer than its scene cannot be pushed
-        // out of it entirely.
-        const maxStart = Math.max(sceneStartMs, sceneEndMs - span);
-        startMs = Math.min(Math.max(startMs, sceneStartMs), maxStart);
+        // Keep the length exactly - a move must never resize.
+        startMs = Math.min(Math.max(startMs, 0), Math.max(0, duration - span));
         endMs = startMs + span;
       } else if (drag.kind === 'trim-start') {
         startMs = snap(drag.fromMs + deltaMs, snapping);
-        startMs = Math.min(Math.max(startMs, sceneStartMs), drag.toMs - MIN_LAYER_MS);
+        startMs = Math.min(Math.max(startMs, 0), drag.toMs - MIN_LAYER_MS);
       } else {
         endMs = snap(drag.toMs + deltaMs, snapping);
-        endMs = Math.max(Math.min(endMs, sceneEndMs), drag.fromMs + MIN_LAYER_MS);
+        endMs = Math.max(Math.min(endMs, duration), drag.fromMs + MIN_LAYER_MS);
       }
 
       // transient: a drag emits dozens of updates and only the last one should
@@ -381,6 +386,7 @@ function LayerTrack({
                   ? 'border-accent bg-accent/25 text-accent-soft'
                   : 'border-ink-700 bg-ink-800 text-ink-400 hover:border-ink-500',
                 dragging ? 'cursor-grabbing' : 'cursor-grab',
+                'touch-none',
               )}
               style={{
                 left: pct(layer.startMs),
@@ -395,13 +401,15 @@ function LayerTrack({
             >
               {/* trim handles: generous hit area, subtle appearance */}
               <span
-                className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize bg-accent/0 hover:bg-accent/60"
+                // Wider on touch: 1.5 units is a comfortable mouse target and
+                // an impossible finger one.
+                className="absolute inset-y-0 left-0 w-3 touch-none cursor-ew-resize bg-accent/0 hover:bg-accent/60 sm:w-1.5"
                 onPointerDown={begin('trim-start', layer)}
                 title="Drag to change when this caption appears"
               />
               <span className="pointer-events-none truncate px-2">{layerText(layer) || 'New text'}</span>
               <span
-                className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize bg-accent/0 hover:bg-accent/60"
+                className="absolute inset-y-0 right-0 w-3 touch-none cursor-ew-resize bg-accent/0 hover:bg-accent/60 sm:w-1.5"
                 onPointerDown={begin('trim-end', layer)}
                 title="Drag to change when this caption leaves"
               />

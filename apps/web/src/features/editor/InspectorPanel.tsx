@@ -201,9 +201,24 @@ function RunEditor({
   const setRunEmphasis = useEditorStore((s) => s.setRunEmphasis);
   const palette = useEditorStore((s) => s.state?.design.direction.palette ?? ['#FFFFFF']);
 
+  const applyRunStyleToVoice = useEditorStore((s) => s.applyRunStyleToVoice);
+
   const [fontOpen, setFontOpen] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
+  // While on, every typographic edit below lands on every run in this voice.
+  const [applyToAll, setApplyToAll] = useState(false);
   const font = getFont(run.fontId);
+
+  /*
+   * One entry point for every style control, so the checkbox governs all of
+   * them rather than each one having to remember. With it off this is exactly
+   * the previous behaviour; with it on the same edit is committed everywhere in
+   * one step, which keeps it to a single undo.
+   */
+  const apply = (patch: Partial<TextRun>) => {
+    if (applyToAll) applyRunStyleToVoice(layer.id, run.id, patch);
+    else updateRun(layer.id, run.id, patch);
+  };
 
   // Pair against whichever run this one is not, so suggestions are meaningful.
   const counterpart = layer.runs.find((r) => r.id !== run.id && r.emphasis !== run.emphasis);
@@ -250,6 +265,32 @@ function RunEditor({
             />
           </Field>
 
+          {/* Sits above the style controls because it changes what all of them
+              do - discovering it afterwards would mean redoing the work. */}
+          <label className="mb-2 flex min-h-[44px] cursor-pointer items-center gap-2 rounded-md border border-ink-800 bg-ink-900/60 px-2.5 py-2">
+            <input
+              type="checkbox"
+              className="h-4 w-4 shrink-0 accent-accent"
+              checked={applyToAll}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setApplyToAll(on);
+                // Ticking it pushes what is already here outwards, so the
+                // normal flow - perfect one word, then match the rest - works
+                // without having to nudge a control to trigger it.
+                if (on) applyRunStyleToVoice(layer.id, run.id);
+              }}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[11px] text-ink-200">
+                Apply to all <span className="text-accent-soft">{run.emphasis}</span> text
+              </span>
+              <span className="block text-[10px] leading-tight text-ink-600">
+                Every word in this voice, across all scenes
+              </span>
+            </span>
+          </label>
+
           <Field label="Font">
             <button
               className="flex min-h-[44px] w-full items-center justify-between rounded-md border border-ink-700 bg-ink-850 px-2.5 py-2 text-left transition hover:border-ink-600"
@@ -267,7 +308,7 @@ function RunEditor({
           <Field label="Weight">
             <Select
               value={String(run.fontWeight)}
-              onChange={(w) => updateRun(layer.id, run.id, { fontWeight: Number(w) })}
+              onChange={(w) => apply({ fontWeight: Number(w) })}
               options={font.weights.map((w) => ({ value: String(w), label: String(w) }))}
             />
           </Field>
@@ -283,7 +324,7 @@ function RunEditor({
           <Slider
             label="Size"
             value={run.sizeScale}
-            onChange={(sizeScale) => updateRun(layer.id, run.id, { sizeScale })}
+            onChange={(sizeScale) => apply({ sizeScale })}
             min={0.2}
             max={3.5}
             step={0.05}
@@ -293,7 +334,7 @@ function RunEditor({
           <Slider
             label="Letter spacing"
             value={run.letterSpacing}
-            onChange={(letterSpacing) => updateRun(layer.id, run.id, { letterSpacing })}
+            onChange={(letterSpacing) => apply({ letterSpacing })}
             min={-0.1}
             max={0.6}
             step={0.005}
@@ -303,7 +344,7 @@ function RunEditor({
           <Slider
             label="Baseline"
             value={run.baselineShift}
-            onChange={(baselineShift) => updateRun(layer.id, run.id, { baselineShift })}
+            onChange={(baselineShift) => apply({ baselineShift })}
             min={-0.6}
             max={0.6}
             step={0.01}
@@ -313,7 +354,7 @@ function RunEditor({
           <Slider
             label="Opacity"
             value={run.opacity}
-            onChange={(opacity) => updateRun(layer.id, run.id, { opacity })}
+            onChange={(opacity) => apply({ opacity })}
             format={(v) => `${Math.round(v * 100)}%`}
           />
 
@@ -321,7 +362,7 @@ function RunEditor({
             <Toggle
               label="Italic"
               checked={run.italic}
-              onChange={(italic) => updateRun(layer.id, run.id, { italic })}
+              onChange={(italic) => apply({ italic })}
             />
           )}
 
@@ -329,7 +370,7 @@ function RunEditor({
             <ColorPicker
               value={run.color}
               palette={palette}
-              onChange={(color) => updateRun(layer.id, run.id, { color })}
+              onChange={(color) => apply({ color })}
             />
           </Field>
         </div>
@@ -342,7 +383,7 @@ function RunEditor({
             pairWith={counterpart?.fontId}
             onClose={() => setFontOpen(false)}
             onChange={(fontId: FontId) =>
-              updateRun(layer.id, run.id, {
+              apply({
                 fontId,
                 fontWeight: resolveWeight(fontId, run.fontWeight),
                 // A face without an italic must not stay flagged italic, or the

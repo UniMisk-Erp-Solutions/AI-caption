@@ -335,7 +335,13 @@ export function EditorPage() {
   }
 
   return (
-    <div className="flex h-[100dvh] flex-col overflow-hidden">
+    /*
+     * The mobile tab bar is fixed to the bottom, so without this padding it sat
+     * on top of the timeline - the timeline was rendered the whole time, just
+     * permanently covered, which read as "there is no timeline on mobile".
+     * env() covers the home indicator on iOS, where the bar is taller than 56px.
+     */
+    <div className="flex h-[100dvh] flex-col overflow-hidden pb-[calc(56px+env(safe-area-inset-bottom))] lg:pb-0">
       {/* header */}
       <header className="flex shrink-0 items-center gap-3 border-b border-ink-800 bg-ink-900 px-4 py-2.5">
         <Link to="/" className="font-display text-lg leading-none text-ink-100 hover:text-accent">
@@ -408,7 +414,10 @@ export function EditorPage() {
           <div className="min-h-0 flex-1 bg-ink-950 p-2 sm:p-4 lg:p-6">
             <CanvasStage videoUrl={videoUrl} />
           </div>
-          <div className="h-[150px] shrink-0 border-t border-ink-800 sm:h-[190px]">
+          {/* Taller on a phone than it was: the track needs room for a row of
+              bars plus the waveform, and a cramped one cannot be dragged
+              accurately with a finger. */}
+          <div className="h-[176px] shrink-0 border-t border-ink-800 sm:h-[190px]">
             <Timeline waveform={waveform} />
           </div>
         </main>

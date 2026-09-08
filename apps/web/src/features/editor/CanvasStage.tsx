@@ -1,4 +1,12 @@
-import { hitTest, measureLayerRect, renderFrame, sceneAt, type CaptionLayer } from '@kc/shared';
+import {
+  activeLayers,
+  hitTestLayers,
+  measureLayerRect,
+  renderFrame,
+  sceneAt,
+  sceneOfLayer,
+  type CaptionLayer,
+} from '@kc/shared';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ensureSceneFonts } from '../../fonts/fonts';
 import { cn } from '../../lib/cn';
@@ -182,28 +190,24 @@ export function CanvasStage({ videoUrl, className }: Props) {
     const ctx = measuringCtx();
     if (!ctx) return;
 
-    // Hit test the scene that was actually painted, not `useActiveScene` - that
-    // falls back to the selected scene when the playhead sits in a gap between
-    // scenes, where the canvas is showing nothing at all. Clicking empty video
-    // would otherwise select a layer from a scene that is not on screen.
-    const drawnScene = sceneAt(state, timeMs);
-    if (!drawnScene) {
-      select(null, null);
-      return;
-    }
-
+    // Hit test exactly what was painted. Visibility follows each layer's own
+    // window rather than its parent scene's, so a layer trimmed past a scene
+    // boundary is still both drawn and clickable - and one that is off screen
+    // is neither, which is what stops a click landing on invisible text.
     const point = toNormalized(event);
-    // Hit test against the same layout the renderer produced, so what looks
-    // clickable is clickable.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const layer = hitTest(ctx, drawnScene, point, frameW, frameH, timeMs);
+    const layer = hitTestLayers(ctx, activeLayers(state, timeMs), point, frameW, frameH);
 
     if (!layer) {
-      select(drawnScene.id, null);
+      // Empty video selects the scene under the playhead, or clears when the
+      // playhead sits in a gap where nothing is on screen at all.
+      select(sceneAt(state, timeMs)?.id ?? null, null);
       return;
     }
 
-    select(drawnScene.id, layer.id);
+    // Select the scene that owns the layer, which is not necessarily the one
+    // under the playhead now that layers can outlive their scene.
+    select(sceneOfLayer(state, layer.id)?.id ?? null, layer.id);
     (event.target as Element).setPointerCapture(event.pointerId);
     dragRef.current = {
       kind: 'move',

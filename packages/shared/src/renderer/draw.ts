@@ -244,13 +244,37 @@ export function sceneAt(state: EditorState, timeMs: number): CaptionScene | null
   return null;
 }
 
-/** Every layer that should be on screen at `timeMs`. */
+/**
+ * Every layer that should be on screen at `timeMs`, from any scene.
+ *
+ * Visibility is decided by the layer's own window, not by which scene owns it.
+ * That distinction matters: layers used to be drawn only while the playhead sat
+ * inside their parent scene, so a layer trimmed or dragged past its scene
+ * boundary silently stopped appearing. The timeline compensated by refusing to
+ * move one outside its scene at all, which made scene edges feel like walls.
+ *
+ * Scoping visibility to the layer instead removes the wall without changing
+ * anything for a layer that stays inside its scene - it is visible over exactly
+ * the same interval as before, since that interval was already the intersection
+ * of the two. Only layers that extend beyond their scene behave differently,
+ * and they now behave the way the timeline shows them.
+ */
 export function activeLayers(state: EditorState, timeMs: number): CaptionLayer[] {
-  const scene = sceneAt(state, timeMs);
-  if (!scene) return [];
-  return scene.layers
-    .filter((l) => timeMs >= l.startMs && timeMs <= l.endMs)
-    .sort((a, b) => a.zIndex - b.zIndex);
+  const out: CaptionLayer[] = [];
+  for (const scene of state.design.scenes) {
+    for (const layer of scene.layers) {
+      if (timeMs >= layer.startMs && timeMs <= layer.endMs) out.push(layer);
+    }
+  }
+  return out.sort((a, b) => a.zIndex - b.zIndex);
+}
+
+/** The scene that owns `layerId`, for selection after a hit test. */
+export function sceneOfLayer(state: EditorState, layerId: string): CaptionScene | null {
+  for (const scene of state.design.scenes) {
+    if (scene.layers.some((l) => l.id === layerId)) return scene;
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -280,11 +304,14 @@ export function renderFrame(
   frameH: number,
   options: RenderOptions = {},
 ): void {
-  const scene = sceneAt(state, timeMs);
-  if (!scene) return;
+  // `ignoreTiming` is a scene-scoped preview mode - show me everything this
+  // scene contains - so it still resolves through the scene under the playhead.
+  // Normal rendering asks each layer when it wants to be on screen.
+  const base = options.ignoreTiming
+    ? (sceneAt(state, timeMs)?.layers ?? [])
+    : activeLayers(state, timeMs);
 
-  const layers = scene.layers
-    .filter((l) => options.ignoreTiming || (timeMs >= l.startMs && timeMs <= l.endMs))
+  const layers = base
     .filter((l) => !options.hiddenLayerIds?.has(l.id))
     .sort((a, b) => a.zIndex - b.zIndex);
 
@@ -513,26 +540,22 @@ export function measureLayerRect(ctx: Ctx2D, layer: CaptionLayer, frameW: number
   };
 }
 
-/** Topmost layer under a normalised point, or null. */
-export function hitTest(
+/**
+ * Topmost layer under a normalised point, or null.
+ *
+ * Takes the layers to consider rather than finding them, so the caller can pass
+ * exactly what was drawn. Clickable and visible have to be the same set or
+ * selection lies, and since visibility is no longer scene-scoped, neither is
+ * this.
+ */
+export function hitTestLayers(
   ctx: Ctx2D,
-  scene: CaptionScene,
+  layers: CaptionLayer[],
   point: { x: number; y: number },
   frameW: number,
   frameH: number,
-  timeMs: number,
 ): CaptionLayer | null {
-  const sorted = [...scene.layers]
-    // Only what is on screen can be clicked.
-    //
-    // A scene's layers have staggered windows, so at any instant most of them
-    // are not drawn - and their rects still overlap the ones that are. Without
-    // this filter a click lands on an invisible layer, and the user drags
-    // something they cannot see while the text under the cursor sits still.
-    // The predicate is deliberately identical to the one in `renderFrame`:
-    // clickable and visible have to be the same set, or selection lies.
-    .filter((layer) => timeMs >= layer.startMs && timeMs <= layer.endMs)
-    .sort((a, b) => b.zIndex - a.zIndex);
+  const sorted = [...layers].sort((a, b) => b.zIndex - a.zIndex);
   for (const layer of sorted) {
     const rect = measureLayerRect(ctx, layer, frameW, frameH);
     // Rotate the point into the layer's local space so rotated text still hits.

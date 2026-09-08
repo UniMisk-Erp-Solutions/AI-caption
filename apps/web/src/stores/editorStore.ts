@@ -16,6 +16,7 @@ import {
   type TextRun,
   type TextTransform,
   type TranscriptWord,
+  restyleRun,
 } from '@kc/shared';
 import { create } from 'zustand';
 import { saveLocalState } from '../db/local';
@@ -96,6 +97,14 @@ interface EditorStore {
   replaceScene(scene: CaptionScene): void;
   replaceScenes(scenes: CaptionScene[]): void;
   setDirection(patch: Partial<ArtDirection>): void;
+  /** Swap the look without touching layout, timing or animation. */
+  /**
+   * Push one run's typography onto every other run set in the same voice.
+   * `patch` when given is applied to the source run first, so a single edit can
+   * land everywhere in one undo step.
+   */
+  applyRunStyleToVoice(layerId: string, runId: string, patch?: Partial<TextRun>): void;
+  restyleWithPreset(presetId: string): void;
   regenerateWithPreset(presetId: string): void;
   updateWord(wordId: string, patch: Partial<TranscriptWord>): void;
   insertWordAfter(wordId: string, text: string): void;
@@ -616,6 +625,105 @@ export const useEditorStore = create<EditorStore>((set, get) => {
       commit({
         ...state,
         design: { ...state.design, direction: { ...state.design.direction, ...patch } },
+      });
+    },
+
+    /**
+     * Copy this run's look to every run sharing its emphasis, project-wide.
+     *
+     * Scoped to the voice rather than to literally every run, because the
+     * design is built on pairing: base carries the sentence and hero is the one
+     * word swapped out at roughly twice the size. Pushing a hero script onto
+     * every base word would flatten exactly the contrast that makes the look
+     * work. Scoping it this way means "perfect one hero word, then make every
+     * hero word match", which is the thing worth doing in bulk.
+     *
+     * Only typography travels. Text, word ids, emphasis and the tuck values
+     * belong to the individual run and stay put.
+     */
+    applyRunStyleToVoice(layerId, runId, patch) {
+      const { state } = get();
+      if (!state) return;
+
+      const source = state.design.scenes
+        .flatMap((scene) => scene.layers)
+        .find((l) => l.id === layerId)
+        ?.runs.find((r) => r.id === runId);
+      if (!source) return;
+
+      const styled = { ...source, ...(patch ?? {}) };
+      const look = {
+        fontId: styled.fontId,
+        fontWeight: styled.fontWeight,
+        italic: styled.italic,
+        sizeScale: styled.sizeScale,
+        letterSpacing: styled.letterSpacing,
+        baselineShift: styled.baselineShift,
+        color: styled.color,
+        opacity: styled.opacity,
+      };
+
+      commit({
+        ...state,
+        design: {
+          ...state.design,
+          scenes: state.design.scenes.map((scene) => ({
+            ...scene,
+            layers: scene.layers.map((layer) => {
+              const runs = layer.runs.map((r) => {
+                if (r.id === runId && layer.id === layerId) return styled;
+                return r.emphasis === source.emphasis ? { ...r, ...look } : r;
+              });
+              const changed = runs.some((r, i) => r !== layer.runs[i]);
+              // Touching a layer marks it hand-edited, so the designer will not
+              // silently overwrite it on the next re-layout.
+              return changed ? { ...layer, locked: true, runs } : layer;
+            }),
+          })),
+        },
+      });
+    },
+
+    /**
+     * Re-set every run in a new preset's voice, leaving everything else alone.
+     *
+     * This is what picking a style in the sidebar does. It used to call
+     * regenerateWithPreset, which re-runs the designer and therefore threw away
+     * every position, alignment and animation the user had set - captions
+     * snapped back to centre, and trying a look cost all the work since. Style
+     * is typography; where a caption sits and how it moves is not.
+     *
+     * Locked layers are restyled too. Locking protects a layer from being
+     * re-laid out, and nothing here lays anything out.
+     */
+    restyleWithPreset(presetId) {
+      const { state } = get();
+      if (!state) return;
+
+      const direction: ArtDirection = {
+        ...state.design.direction,
+        preset: presetId as ArtDirection['preset'],
+      };
+      const preset = getPreset(presetId);
+
+      commit({
+        ...state,
+        design: {
+          direction,
+          scenes: state.design.scenes.map((scene) => ({
+            ...scene,
+            layers: scene.layers.map((layer) => ({
+              ...layer,
+              // Base size and line height are the preset's typographic voice
+              // rather than the user's layout, so they follow the style. The
+              // anchor, alignment, rotation and wrap width do not, which is
+              // what keeps the caption where it was put.
+              fontSize: preset.baseSize,
+              lineHeight: preset.leading,
+              runs: layer.runs.map((run, index) => restyleRun(run, preset, direction, index === 0)),
+            })),
+          })),
+        },
       });
     },
 

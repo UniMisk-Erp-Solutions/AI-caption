@@ -9,7 +9,7 @@ import {
   relatedPresets,
   type PresetId,
 } from '@kc/shared';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Section, Slider, Spinner } from '../../components/ui';
 import { cn } from '../../lib/cn';
 import { hasApi } from '../../lib/env';
@@ -36,6 +36,7 @@ export function StylePanel({ onAiAction, aiBusy }: Props) {
   const state = useEditorStore((s) => s.state);
   const setDirection = useEditorStore((s) => s.setDirection);
   const regenerateWithPreset = useEditorStore((s) => s.regenerateWithPreset);
+  const restyleWithPreset = useEditorStore((s) => s.restyleWithPreset);
   const scene = useActiveScene();
 
   const [query, setQuery] = useState('');
@@ -102,7 +103,7 @@ export function StylePanel({ onAiAction, aiBusy }: Props) {
               key={id}
               id={id}
               active={direction.preset === id}
-              onSelect={() => regenerateWithPreset(id)}
+              onSelect={() => restyleWithPreset(id)}
             />
           ))}
         </div>
@@ -283,14 +284,49 @@ function PresetCard({
   const preset = getPreset(id);
   const base = getFont(preset.voices.base.fontId);
   const hero = getFont(preset.voices.hero.fontId);
+  const ref = useRef<HTMLButtonElement | null>(null);
+
+  /*
+   * Load the faces as soon as the card is actually on screen.
+   *
+   * These were loaded on hover, which meant every card sat in a fallback face
+   * until pointed at - so the previews appeared to render one by one as the
+   * cursor moved over them, and the whole point of a pairing card is how the
+   * two faces sit together. Hover is also unreachable on touch.
+   *
+   * Loading all of them up front is the other extreme: the gallery pages 12 at
+   * a time out of 135 presets, and each card wants two families. Observing
+   * visibility asks for exactly the ones being looked at, which is what hover
+   * was approximating.
+   */
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    // Without IntersectionObserver, fall back to loading immediately - a
+    // missing preview is worse than an eager fetch.
+    if (typeof IntersectionObserver === 'undefined') {
+      void preloadFontsForPicker([base.id, hero.id]);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        void preloadFontsForPicker([base.id, hero.id]);
+        observer.disconnect();
+      },
+      // Start slightly before the card scrolls in, so type is already there.
+      { rootMargin: '120px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [base.id, hero.id]);
 
   return (
     <button
+      ref={ref}
       onClick={onSelect}
-      // The preview is live type, so the faces have to arrive before the card
-      // means anything - but only for cards the user actually looks at.
-      onPointerEnter={() => preloadFontsForPicker([base.id, hero.id])}
-      onFocus={() => preloadFontsForPicker([base.id, hero.id])}
       className={cn(
         'group overflow-hidden rounded-md border text-left transition',
         active ? 'border-accent ring-1 ring-accent/40' : 'border-ink-700 hover:border-ink-500',
