@@ -12,7 +12,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "verify:snap": "tsx scripts/verify-snap.ts"
   },
   "dependencies": {
     "zod": "^3.23.8"

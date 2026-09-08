@@ -14,11 +14,20 @@ import { openInput } from './probe';
  * nothing but upload time.
  */
 
+export interface SpeechEnvelopeData {
+  /** Per-frame RMS loudness. */
+  frames: Float32Array;
+  /** Milliseconds between frames. */
+  hopMs: number;
+}
+
 export interface ExtractedAudio {
   blob: Blob;
   mimeType: string;
   durationMs: number;
   sampleRate: number;
+  /** Loudness over time, used to check word timings against the real audio. */
+  envelope: SpeechEnvelopeData;
 }
 
 /** Decode the whole audio track into one interleaved-free mono Float32Array. */
@@ -127,6 +136,40 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
 }
 
 /**
+ * Short-time RMS loudness, one value every `hopMs`.
+ *
+ * This is what lets word timings be checked against the audio instead of taken
+ * on trust: speech and silence separate cleanly in it, so the boundaries the
+ * model guessed can be measured against boundaries that actually exist.
+ *
+ * Computed from the 16kHz mono signal we already resampled for upload, so it
+ * costs one cheap pass rather than a second decode. A 25ms window with a 10ms
+ * hop is the standard speech framing - long enough to be stable across a pitch
+ * period, short enough to place an onset precisely.
+ */
+export function computeSpeechEnvelope(
+  samples: Float32Array,
+  sampleRate: number,
+  hopMs = 10,
+  windowMs = 25,
+): SpeechEnvelopeData {
+  const hop = Math.max(1, Math.round((sampleRate * hopMs) / 1000));
+  const window = Math.max(hop, Math.round((sampleRate * windowMs) / 1000));
+  const count = Math.max(0, Math.ceil(samples.length / hop));
+  const frames = new Float32Array(count);
+
+  for (let f = 0; f < count; f++) {
+    const start = f * hop;
+    const end = Math.min(samples.length, start + window);
+    let sum = 0;
+    for (let i = start; i < end; i++) sum += samples[i] * samples[i];
+    frames[f] = end > start ? Math.sqrt(sum / (end - start)) : 0;
+  }
+
+  return { frames, hopMs };
+}
+
+/**
  * Extract a compact mono WAV suitable for the transcription API.
  * `onProgress` reports 0..1 across decode and resample.
  */
@@ -143,6 +186,7 @@ export async function extractAudioForTranscription(
 
   onProgress?.(0.9);
   const blob = encodeWav(resampled, target);
+  const envelope = computeSpeechEnvelope(resampled, target);
   onProgress?.(1);
 
   return {
@@ -150,6 +194,7 @@ export async function extractAudioForTranscription(
     mimeType: 'audio/wav',
     durationMs: Math.round((resampled.length / target) * 1000),
     sampleRate: target,
+    envelope,
   };
 }
 

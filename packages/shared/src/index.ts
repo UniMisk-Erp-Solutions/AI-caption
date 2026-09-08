@@ -9,6 +9,7 @@ export * from './schemas/editor';
 export * from './schemas/ai';
 
 export * from './transcript/align';
+export * from './transcript/snap';
 export * from './transcript/scenes';
 export * from './transcript/estimate';
 

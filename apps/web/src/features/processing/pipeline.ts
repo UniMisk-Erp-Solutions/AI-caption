@@ -4,6 +4,7 @@ import {
   autoDesign,
   editorStateSchema,
   estimateTimings,
+  snapWordTimings,
   expandAiDesign,
   choosePreset,
   getPreset,
@@ -19,7 +20,10 @@ import {
 } from '@kc/shared';
 import { generateDesign, transcribeAudio, analyzeAudio } from '../../lib/api';
 import { hasApi } from '../../lib/env';
-import { extractAudioForTranscription } from '../../media/audio';
+import {
+  extractAudioForTranscription,
+  type SpeechEnvelopeData,
+} from '../../media/audio';
 import { analyzeScenes, extractSceneFrames, releaseFrames } from '../../media/frames';
 import type { MediaInfo } from '../../media/probe';
 
@@ -135,11 +139,13 @@ export async function runPipeline(
   if (canUseAi) {
     tracker.set('audio', { status: 'active' });
     let audio: Blob | null = null;
+    let envelope: SpeechEnvelopeData | null = null;
     try {
       const extracted = await extractAudioForTranscription(input.file, (p) =>
         tracker.set('audio', { status: 'active', progress: p }),
       );
       audio = extracted.blob;
+      envelope = extracted.envelope;
       tracker.set('audio', {
         status: 'done',
         detail: `${(extracted.blob.size / 1024 / 1024).toFixed(1)} MB · ${extracted.sampleRate / 1000} kHz mono`,
@@ -217,6 +223,30 @@ export async function runPipeline(
           // Verification is an enhancement. Losing it costs accuracy on sung
           // audio, but the timed transcript on its own is perfectly usable.
           tracker.set('verify', { status: 'skipped', detail: describe(error) });
+        }
+      }
+
+      /* ------------------------------------------------ timing ----- */
+      /*
+       * The words are settled by this point; when they are said is not. Model
+       * timestamps drift by 50-250ms, and by differing amounts depending on
+       * which model in the chain answered - which is why timing quality moved
+       * around as free-tier quota pushed work onto fallback models.
+       *
+       * Measuring the audio removes the model from that question entirely.
+       * snapWordTimings refuses outright when the audio carries no usable
+       * structure, so this cannot degrade a transcript it fails to improve.
+       */
+      if (words.length > 0 && envelope) {
+        const snapped = snapWordTimings(words, envelope, input.media.durationMs);
+        if (snapped.report.applied) {
+          words = snapped.words;
+          tracker.set('transcribe', {
+            status: 'done',
+            detail:
+              `${words.length} words · timing aligned to audio ` +
+              `(${snapped.report.wordsMoved} moved, ~${snapped.report.meanShiftMs}ms)`,
+          });
         }
       }
     }
