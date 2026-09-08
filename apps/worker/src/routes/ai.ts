@@ -15,6 +15,7 @@ import {
   TRANSCRIBE_SYSTEM_PROMPT,
   transcriptionResultSchema,
   type PromptPart,
+  assessDegeneracy,
 } from '@kc/shared/server';
 import { assertProjectOwnership, requireUser } from '../auth/jwt';
 import { extractJson, generate, generateWithFallback, resolveModelChain, type Part } from '../gemini/client';
@@ -168,6 +169,17 @@ export async function handleTranscribe(request: Request, env: Env, headers: Head
           // accept a transcript that stopped a third of the way through.
           if (end < durationMs * 0.92) return false;
         }
+
+        // A model that has started predicting from its own output rather than
+        // the audio repeats one fragment to the end of the clip. That is worth
+        // spending another model on; a chorus is not, and the thresholds are
+        // set from measured output so the two are not confused.
+        const degeneracy = assessDegeneracy(candidate.data.words);
+        if (degeneracy.degenerate) {
+          console.warn('Rejecting degenerate transcript:', degeneracy.reason);
+          return false;
+        }
+
         return true;
       } catch {
         return false;

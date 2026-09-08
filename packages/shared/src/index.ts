@@ -10,6 +10,7 @@ export * from './schemas/ai';
 
 export * from './transcript/align';
 export * from './transcript/snap';
+export * from './transcript/quality';
 export * from './transcript/scenes';
 export * from './transcript/estimate';
 
