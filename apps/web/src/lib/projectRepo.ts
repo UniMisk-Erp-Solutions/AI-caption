@@ -267,7 +267,7 @@ export async function openProject(projectId: string): Promise<OpenedProject | nu
           recoveredUnsynced = true;
           // Push the newer local copy straight back up so the two agree again.
           await saveRemoteState(projectId, state)
-            .then(() => markSynced(projectId, state!.revision))
+            .then((written) => (written ? markSynced(projectId, state!.revision) : undefined))
             .catch(() => undefined);
         }
       }
@@ -313,8 +313,33 @@ export async function openProject(projectId: string): Promise<OpenedProject | nu
 export async function saveState(projectId: string, state: EditorState): Promise<void> {
   await saveLocalState(projectId, state, !hasSupabase);
   if (!hasSupabase) return;
-  await saveRemoteState(projectId, state);
-  await markSynced(projectId, state.revision);
+
+  let written = await saveRemoteState(projectId, state);
+
+  // A false here is either "the server already has something newer" or "there
+  // is no row to update". The second case is recoverable and used to be
+  // permanent: if createRemoteProject failed at upload time - the project cap
+  // being the usual reason - nothing ever created the row afterwards, so every
+  // later autosave quietly went nowhere and the project stayed device-local.
+  if (!written && !(await getRemoteProject(projectId).catch(() => null))) {
+    const local = await getLocalProject(projectId);
+    if (local) {
+      await createRemoteProject({
+        id: local.id,
+        title: local.title,
+        width: local.width,
+        height: local.height,
+        fps: local.fps,
+        durationMs: local.durationMs,
+      });
+      written = await saveRemoteState(projectId, state);
+    }
+  }
+
+  // Only claim the local copy is synced when the server actually took it,
+  // otherwise the dirty flag lies and openProject stops recovering the newer
+  // local edits it was written to protect.
+  if (written) await markSynced(projectId, state.revision);
 }
 
 export async function renameProject(projectId: string, title: string): Promise<void> {

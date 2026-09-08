@@ -151,9 +151,33 @@ export async function updateRemoteProject(
  * one cannot overwrite it - out-of-order autosaves are the classic way to lose
  * a user's last edit.
  */
-export async function saveRemoteState(projectId: string, state: EditorState): Promise<void> {
-  if (!supabase) return;
-  const { error } = await supabase
+export async function saveRemoteState(projectId: string, state: EditorState): Promise<boolean> {
+  if (!supabase) return false;
+
+  // Preferred path: the comparison happens inside the same statement as the
+  // write, so it cannot race, and NULL/lexicographic handling lives in one
+  // place. Added in migration 0003.
+  const rpc = await supabase.rpc('save_editor_state', {
+    p_project_id: projectId,
+    p_state: state,
+  });
+
+  if (!rpc.error) return rpc.data === true;
+
+  // PGRST202 is "function not found", i.e. migration 0003 has not been applied
+  // to this database yet. Anything else is a real failure and must surface.
+  const missingFunction =
+    rpc.error.code === 'PGRST202' || /save_editor_state/i.test(rpc.error.message ?? '');
+  if (!missingFunction) throw rpc.error;
+
+  // Fallback for a pre-0003 database.
+  //
+  // The `is.null` arm is the entire bug this replaces: without it the filter
+  // was `NULL < revision`, which is NULL rather than true, so the first save
+  // on a fresh project matched no rows and was silently dropped. The revision
+  // comparison here is still text (so still lexicographic past 9) - that is
+  // precisely why 0003 exists and why this is only a stopgap.
+  const { data, error } = await supabase
     .from('projects')
     .update({
       editor_state: state,
@@ -161,11 +185,11 @@ export async function saveRemoteState(projectId: string, state: EditorState): Pr
       updated_at: new Date().toISOString(),
     })
     .eq('id', projectId)
-    .lt('editor_state->>revision', String(state.revision));
+    .or(`editor_state.is.null,editor_state->>revision.lt.${state.revision}`)
+    .select('id');
 
-  // A no-row update here means the stored revision is newer, which is fine -
-  // the newer state wins and this write is correctly discarded.
   if (error) throw error;
+  return (data?.length ?? 0) > 0;
 }
 
 export async function deleteRemoteProject(id: string): Promise<void> {
