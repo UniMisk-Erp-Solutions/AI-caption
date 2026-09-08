@@ -16,9 +16,32 @@ compatibility_flags = ["nodejs_compat"]
 ALLOWED_ORIGIN = "http://localhost:5173,https://ai-reel-caption-seven.vercel.app"
 R2_BUCKET_NAME = "caption-ai-media"
 
-# Secrets - set with `wrangler secret put <NAME>`, never in this file:
-#   GEMINI_API_KEY
-#   SUPABASE_URL
-#   R2_ACCOUNT_ID
-#   R2_ACCESS_KEY_ID
-#   R2_SECRET_ACCESS_KEY
+# Which storage backend to use. Omit to infer from whichever keys are present.
+# STORAGE_PROVIDER = "immich"
+
+# Secrets - set with `wrangler secret put <NAME>`, never in this file.
+#
+# Required for anything to work:
+#   GEMINI_API_KEY        transcription and design
+#   SUPABASE_URL          verifies the caller's token against the project JWKS
+#   SUPABASE_ANON_KEY     PostgREST rejects a user token in its apikey header,
+#                         so without this every ownership check returns 500
+#
+# Required for video to leave the browser. Without a storage backend the
+# upload endpoint fails, the app falls back to IndexedDB, and projects appear
+# to work while existing only on the device that made them.
+#
+#   Self-hosted Immich:
+#     IMMICH_URL          https://immich.example.com
+#     IMMICH_API_KEY      full scope. Server-side only, never sent to a browser
+#     IMMICH_UPLOAD_KEY   optional, scope `asset.upload` ONLY. Lets the browser
+#                         upload straight to Immich and skips the Worker's
+#                         100 MB request-body cap
+#   or Cloudflare R2:
+#     R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+#
+#   STORAGE_TOKEN_SECRET  signs the short-lived media read links. Falls back to
+#                         SUPABASE_URL if unset, which is guessable - set it.
+#
+# `GET /health` lists exactly which of these are missing and what each one
+# breaks, so a misconfigured deploy diagnoses itself.

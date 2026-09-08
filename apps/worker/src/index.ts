@@ -90,9 +90,30 @@ async function handleHealth(env: Env, headers: HeadersInit): Promise<Response> {
   const configured = {
     gemini: Boolean(env.GEMINI_API_KEY),
     supabase: Boolean(env.SUPABASE_URL),
+    // Reported separately because PostgREST rejects a user token in its apikey
+    // header: without this every ownership check fails with a 500 that looks
+    // nothing like a missing-configuration problem.
+    supabaseAnonKey: Boolean(env.SUPABASE_ANON_KEY),
     storage: hasStorage(env),
+    storageTokenSecret: Boolean(env.STORAGE_TOKEN_SECRET),
     usageCounters: Boolean(env.USAGE),
   };
+
+  // When something is missing, say which variable and what breaks without it.
+  // "storage: false" on its own sent one deployment silently back to
+  // browser-only storage with no indication why.
+  const missing: string[] = [];
+  if (!configured.gemini) missing.push('GEMINI_API_KEY (no transcription or design)');
+  if (!configured.supabase) missing.push('SUPABASE_URL (no auth verification)');
+  if (!configured.supabaseAnonKey) missing.push('SUPABASE_ANON_KEY (ownership checks fail)');
+  if (!configured.storage) {
+    missing.push(
+      'IMMICH_URL + IMMICH_API_KEY, or the R2 keys (uploads fail, so video stays in the browser)',
+    );
+  }
+  if (!configured.storageTokenSecret && hasStorage(env)) {
+    missing.push('STORAGE_TOKEN_SECRET (media read links are guessable)');
+  }
 
   // Report the storage arrangement, because "why is my upload failing" is
   // almost always a missing key or the wrong upload mode.
@@ -123,5 +144,5 @@ async function handleHealth(env: Env, headers: HeadersInit): Promise<Response> {
     models = await resolveAllModels(env).catch(() => null);
   }
 
-  return json({ ok: true, configured, storage, models }, {}, headers);
+  return json({ ok: missing.length === 0, configured, missing, storage, models }, {}, headers);
 }

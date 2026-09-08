@@ -39,6 +39,7 @@ export function UploadPage() {
   const [steps, setSteps] = useState<StepState[]>(INITIAL_STEPS);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [uploadFraction, setUploadFraction] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   /* ---------------------------------------------------------------- */
 
@@ -100,8 +101,18 @@ export function UploadPage() {
 
       // The upload runs alongside the AI work rather than blocking it - the
       // pipeline reads the local blob, so there is no reason to wait.
+      //
+      // Its failure used to be swallowed entirely, which meant a Worker with no
+      // storage backend configured looked exactly like a working one: the
+      // project opened normally and the video simply never left the browser,
+      // with nothing said. Now it is reported.
       const uploading = hasApi
-        ? uploadSource(projectId, file, file.name, setUploadFraction).catch(() => null)
+        ? uploadSource(projectId, file, file.name, setUploadFraction).catch((error: unknown) => {
+            setUploadError(
+              error instanceof Error ? error.message : 'The video could not be backed up.',
+            );
+            return null;
+          })
         : Promise.resolve(null);
 
       const result = await runPipeline(
@@ -110,6 +121,12 @@ export function UploadPage() {
       );
 
       setWarnings(result.warnings);
+      if (uploadError) {
+        setWarnings((prev) => [
+          ...prev,
+          `Saved on this device only - ${uploadError} Your captions are safe, but the video is not backed up.`,
+        ]);
+      }
       await saveState(projectId, result.state);
       await uploading;
 
@@ -124,7 +141,13 @@ export function UploadPage() {
   /* ---------------------------------------------------------------- */
 
   if (stage === 'running') {
-    return <ProcessingView steps={steps} warnings={warnings} uploadFraction={uploadFraction} />;
+    return (
+      <ProcessingView
+        steps={steps}
+        warnings={uploadError ? [...warnings, `Cloud backup failed: ${uploadError}`] : warnings}
+        uploadFraction={uploadFraction}
+      />
+    );
   }
 
   return (
