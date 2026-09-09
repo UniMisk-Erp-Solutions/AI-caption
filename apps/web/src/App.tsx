@@ -3,6 +3,8 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { Spinner } from './components/ui';
 import { hasSupabase } from './lib/env';
 import { getSession, supabase } from './lib/supabase';
+import { claimLegacyLocalProjects } from './lib/projectRepo';
+import { useEditorStore } from './stores/editorStore';
 import { AuthPage } from './features/auth/AuthPage';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { DemoPage } from './features/demo/DemoPage';
@@ -74,6 +76,18 @@ function RequireAuth({ children }: { children: ReactNode }) {
 
     const { data } = supabase!.auth.onAuthStateChange((_event, session) => {
       setStatus(session ? 'in' : 'out');
+
+      if (session) {
+        // Adopt projects cached before the local store knew about owners, but
+        // only the ones the server agrees belong to this account.
+        void claimLegacyLocalProjects();
+      } else {
+        // Signing out has to drop the open document from memory as well as
+        // from the screen. The next account gets its own reads from IndexedDB,
+        // but whatever was already loaded would otherwise still be sitting in
+        // the store when they arrive.
+        useEditorStore.getState().reset();
+      }
     });
 
     return () => {

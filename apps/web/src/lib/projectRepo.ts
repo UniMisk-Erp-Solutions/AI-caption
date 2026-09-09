@@ -2,6 +2,7 @@ import { editorStateSchema, type EditorState } from '@kc/shared';
 import {
   deleteLocalProject,
   getLocalProject,
+  claimLegacyProjects,
   listLocalProjects,
   loadLocalState,
   markSynced,
@@ -21,6 +22,7 @@ import { hasApi, hasSupabase } from './env';
 import { describeError } from './errors';
 import {
   createRemoteProject,
+  getUserId,
   deleteRemoteProject,
   getRemoteProject,
   listRemoteProjects,
@@ -65,12 +67,65 @@ export interface OpenedProject {
   recoveredUnsynced: boolean;
 }
 
+
+/**
+ * The account whose data may be touched, or null when nobody is signed in.
+ *
+ * Every local read goes through this. IndexedDB is shared by every account
+ * that has ever used the browser, so "no user" must mean "no local data" -
+ * not "all of it", which is what an unscoped read returned before.
+ */
+async function currentUserId(): Promise<string | null> {
+  if (!hasSupabase) return LOCAL_ONLY_USER;
+  return getUserId();
+}
+
+/**
+ * Owner used when the app runs with no Supabase configured at all.
+ *
+ * In that mode there are no accounts, so a fixed sentinel keeps rows readable
+ * without pretending they belong to a real user - and keeps the owner column
+ * non-optional everywhere else.
+ */
+const LOCAL_ONLY_USER = '__local__';
+
 /* ------------------------------------------------------------------ */
 /* Listing                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Adopt pre-owner rows for whoever just signed in.
+ *
+ * Ownership is decided by the server, never by the client: the id list comes
+ * from Supabase under RLS, so it can only contain projects this account really
+ * owns. A cached row that is not on that list stays hidden rather than being
+ * handed over or deleted - it may be the only copy of work made before cloud
+ * sync worked, and it reappears the moment the server knows about it.
+ *
+ * Safe to call on every sign-in; it is a no-op once there is nothing left
+ * unclaimed.
+ */
+export async function claimLegacyLocalProjects(): Promise<number> {
+  if (!hasSupabase) return 0;
+  try {
+    const userId = await getUserId();
+    if (!userId) return 0;
+    const remote = await listRemoteProjects();
+    return claimLegacyProjects(
+      userId,
+      remote.map((r) => r.id),
+    );
+  } catch {
+    // Offline, or the server refused. Nothing is claimed, which fails closed.
+    return 0;
+  }
+}
+
 export async function listProjects(): Promise<ProjectSummary[]> {
-  const local = await listLocalProjects();
+  const userId = await currentUserId();
+  if (!userId) return [];
+
+  const local = await listLocalProjects(userId);
   const byId = new Map(local.map((p) => [p.id, p]));
 
   if (hasSupabase) {
@@ -140,8 +195,13 @@ export async function createProject(input: {
    * "Project not found", with the real cause never shown.
    */
 }): Promise<string | null> {
+  // Stamped on creation. A row written without an owner is invisible to
+  // everyone, so this is not optional bookkeeping.
+  const userId = (await currentUserId()) ?? LOCAL_ONLY_USER;
+
   await putLocalProject({
     id: input.id,
+    userId,
     title: input.title,
     status: 'processing',
     width: input.width,
@@ -233,8 +293,13 @@ export async function uploadSource(
  * "unsynced changes recovered" rather than silently overwriting the server.
  */
 export async function openProject(projectId: string): Promise<OpenedProject | null> {
-  let project = await getLocalProject(projectId);
-  const localRow = await loadLocalState(projectId);
+  const userId = await currentUserId();
+  if (!userId) return null;
+
+  // Scoped by owner, so a project id typed into the URL cannot open somebody
+  // else's cached work.
+  let project = await getLocalProject(projectId, userId);
+  const localRow = project ? await loadLocalState(projectId) : null;
   let state = localRow?.state ?? null;
   let recoveredUnsynced = false;
 
@@ -248,6 +313,9 @@ export async function openProject(projectId: string): Promise<OpenedProject | nu
           // First time on this device: materialise a local shell.
           project = {
             id: remote.id,
+            // The remote row came back under RLS, so it is this user's by
+            // definition - the shell it materialises is theirs too.
+            userId,
             title: remote.title,
             status: (remote.status as LocalProject['status']) ?? 'ready',
             width: remote.width,
@@ -332,7 +400,8 @@ export async function saveState(projectId: string, state: EditorState): Promise<
   // being the usual reason - nothing ever created the row afterwards, so every
   // later autosave quietly went nowhere and the project stayed device-local.
   if (!written && !(await getRemoteProject(projectId).catch(() => null))) {
-    const local = await getLocalProject(projectId);
+    const userId = await currentUserId();
+    const local = userId ? await getLocalProject(projectId, userId) : undefined;
     if (local) {
       await createRemoteProject({
         id: local.id,
@@ -379,21 +448,33 @@ export async function deleteProject(projectId: string): Promise<void> {
   }
 
   if (hasSupabase) await deleteRemoteProject(projectId).catch(() => undefined);
+
+  // Guarded for the same reason reads are: an id is all it takes, and deleting
+  // is not recoverable.
+  const owner = await currentUserId();
+  if (owner && !(await getLocalProject(projectId, owner))) return;
   await deleteLocalProject(projectId);
 }
 
 /** Retry any local edits that never reached the server. Called on app start. */
 export async function flushUnsynced(): Promise<void> {
   if (!hasSupabase) return;
+  const userId = await currentUserId();
+  if (!userId) return;
+
   const { unsyncedProjectIds } = await import('../db/local');
-  const ids = await unsyncedProjectIds();
+  // Unsynced rows can belong to any account that has used this browser, and
+  // pushing another user's document under this session would write nothing
+  // (RLS matches no row) while still marking it synced - quietly losing their
+  // pending edit. Only flush what this user owns.
+  const mine = new Set((await listLocalProjects(userId)).map((p) => p.id));
+  const ids = (await unsyncedProjectIds()).filter((id) => mine.has(id));
 
   for (const id of ids) {
     const row = await loadLocalState(id);
     if (!row) continue;
     try {
-      await saveRemoteState(id, row.state);
-      await markSynced(id, row.state.revision);
+      if (await saveRemoteState(id, row.state)) await markSynced(id, row.state.revision);
     } catch {
       break; // Still offline - stop trying and let the next edit retry.
     }

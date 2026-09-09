@@ -16,6 +16,21 @@ import type { EditorState } from '@kc/shared';
 
 export interface LocalProject {
   id: string;
+  /**
+   * Who this project belongs to.
+   *
+   * IndexedDB is per-browser, not per-account. Without this every read
+   * returned every project the browser had ever seen, so signing out and in as
+   * somebody else showed them the previous account's projects - titles,
+   * thumbnails and the source video itself. The server was never the leak: RLS
+   * scopes Supabase correctly. The local cache simply had no notion of an
+   * owner.
+   *
+   * Undefined means a row written before this column existed. Those are
+   * claimed on sign-in, but only for a user the server agrees owns them - see
+   * `claimLegacyProjects`.
+   */
+  userId?: string;
   title: string;
   status: 'draft' | 'uploading' | 'processing' | 'ready' | 'error';
   width: number;
@@ -64,6 +79,16 @@ class KineticDb extends Dexie {
       editorStates: 'projectId, updatedAt, synced',
       exports: 'id, projectId, createdAt',
     });
+
+    // v2 indexes the owner. Existing rows keep userId undefined and are
+    // deliberately NOT assigned here: which account they belong to is not
+    // knowable from inside the database, and guessing would hand one user's
+    // work to whoever happens to sign in next.
+    this.version(2).stores({
+      projects: 'id, updatedAt, status, userId',
+      editorStates: 'projectId, updatedAt, synced',
+      exports: 'id, projectId, createdAt',
+    });
   }
 }
 
@@ -73,16 +98,62 @@ export const db = new KineticDb();
 /* Projects                                                            */
 /* ------------------------------------------------------------------ */
 
-export async function listLocalProjects(): Promise<LocalProject[]> {
-  return db.projects.orderBy('updatedAt').reverse().toArray();
+/**
+ * Projects belonging to `userId`.
+ *
+ * The owner is required rather than optional so a caller cannot accidentally
+ * ask for "everything" - which is exactly what every caller used to get.
+ * Unclaimed legacy rows are excluded: they are shown only once the server has
+ * confirmed who owns them.
+ */
+export async function listLocalProjects(userId: string): Promise<LocalProject[]> {
+  const rows = await db.projects.orderBy('updatedAt').reverse().toArray();
+  return rows.filter((row) => row.userId === userId);
 }
 
-export async function getLocalProject(id: string): Promise<LocalProject | undefined> {
-  return db.projects.get(id);
+/**
+ * One project, but only if this user owns it.
+ *
+ * Filtering the list is not enough on its own: project ids appear in the URL,
+ * so /project/<id> would otherwise open another account's work directly.
+ */
+export async function getLocalProject(
+  id: string,
+  userId: string,
+): Promise<LocalProject | undefined> {
+  const row = await db.projects.get(id);
+  if (!row) return undefined;
+  return row.userId === userId ? row : undefined;
 }
 
 export async function putLocalProject(project: LocalProject): Promise<void> {
   await db.projects.put({ ...project, updatedAt: Date.now() });
+}
+
+/**
+ * Adopt pre-v2 rows for a user the server confirms owns them.
+ *
+ * `ownedIds` comes from Supabase under RLS, so it can only ever contain
+ * projects this user really owns - the claim cannot be spoofed from the client.
+ * A legacy row missing from that list stays unclaimed and invisible rather than
+ * being deleted: it may be the only copy of work made before cloud sync worked,
+ * and it becomes visible again as soon as the server knows about it.
+ */
+export async function claimLegacyProjects(userId: string, ownedIds: string[]): Promise<number> {
+  if (ownedIds.length === 0) return 0;
+  const owned = new Set(ownedIds);
+  let claimed = 0;
+
+  await db.transaction('rw', db.projects, async () => {
+    const rows = await db.projects.toArray();
+    for (const row of rows) {
+      if (row.userId !== undefined || !owned.has(row.id)) continue;
+      await db.projects.update(row.id, { userId });
+      claimed++;
+    }
+  });
+
+  return claimed;
 }
 
 export async function patchLocalProject(id: string, patch: Partial<LocalProject>): Promise<void> {
