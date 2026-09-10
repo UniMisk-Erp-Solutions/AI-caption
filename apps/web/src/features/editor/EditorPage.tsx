@@ -23,6 +23,8 @@ import { CanvasStage } from './CanvasStage';
 import { InspectorPanel } from './InspectorPanel';
 import { StylePanel } from './StylePanel';
 import { Timeline } from './Timeline';
+import { ResizeHandle } from '../../components/ResizeHandle';
+import { usePersisted } from '../../lib/usePersisted';
 import { TranscriptPanel } from './TranscriptPanel';
 
 /**
@@ -31,6 +33,17 @@ import { TranscriptPanel } from './TranscriptPanel';
  * Owns loading, the save indicator, keyboard shortcuts and the AI actions.
  * Everything visual lives in the four panels around it.
  */
+
+/**
+ * Geometry of the floating mobile tab bar.
+ *
+ * Shared by the bar, the sheet that stacks above it and the page padding that
+ * keeps it from covering the timeline. Three places have to agree, so the
+ * numbers live here rather than being repeated as literals.
+ */
+const MOBILE_NAV_H = 56;
+const MOBILE_NAV_GAP = 10;
+const MOBILE_NAV_INSET = `env(safe-area-inset-bottom, 0px) + ${MOBILE_NAV_H + MOBILE_NAV_GAP * 2}px`;
 
 export function EditorPage() {
   const { projectId = '' } = useParams();
@@ -50,6 +63,40 @@ export function EditorPage() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [leftTab, setLeftTab] = useState<'style' | 'transcript'>('style');
+
+  /*
+   * Layout preferences, kept across reloads.
+   *
+   * The timeline was a fixed 176-190px for every device, which is cramped on a
+   * phone and wasteful on a desktop - and there was no way to change it. All
+   * three of these are decisions the user makes once.
+   */
+  const [timelineHeight, setTimelineHeight] = usePersisted('kc.layout.timelineHeight', 220);
+
+  /*
+   * How tall the timeline is allowed to get.
+   *
+   * A flat 560px ceiling is taller than a phone in landscape, which would let
+   * the canvas be squeezed to nothing and leave no way back. Tracking the
+   * viewport keeps the limit proportional on every device, and the stored
+   * height is clamped on the way out so a value saved on a large screen cannot
+   * strand a small one.
+   */
+  const [viewportH, setViewportH] = useState(() =>
+    typeof window === 'undefined' ? 900 : window.innerHeight,
+  );
+  useEffect(() => {
+    const onResize = () => setViewportH(window.innerHeight);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const timelineMax = Math.max(180, Math.round(viewportH * 0.55));
+  const timelineH = Math.min(timelineHeight, timelineMax);
+  const [leftOpen, setLeftOpen] = usePersisted('kc.layout.leftPanel', true);
+  const [rightOpen, setRightOpen] = usePersisted('kc.layout.rightPanel', true);
+  const [leftWidth, setLeftWidth] = usePersisted('kc.layout.leftWidth', 300);
+  const [rightWidth, setRightWidth] = usePersisted('kc.layout.rightWidth', 320);
   // Which panel the bottom sheet shows on small screens. Null = canvas only.
   const [sheet, setSheet] = useState<'style' | 'words' | 'transcript' | null>(null);
 
@@ -340,12 +387,22 @@ export function EditorPage() {
 
   return (
     /*
-     * The mobile tab bar is fixed to the bottom, so without this padding it sat
-     * on top of the timeline - the timeline was rendered the whole time, just
-     * permanently covered, which read as "there is no timeline on mobile".
-     * env() covers the home indicator on iOS, where the bar is taller than 56px.
+     * The mobile tab bar floats, so the page has to reserve its height plus the
+     * gap beneath it plus the home indicator - otherwise it sits on top of the
+     * timeline, which is how the timeline came to look absent on mobile.
+     * MOBILE_NAV_INSET keeps that arithmetic in one place; the sheet above the
+     * bar reads the same value, so the two cannot drift apart.
      */
-    <div className="flex h-[100dvh] flex-col overflow-hidden pb-[calc(56px+env(safe-area-inset-bottom))] lg:pb-0">
+    <div
+      /*
+       * A class, not an inline style: an inline paddingBottom would beat
+       * `lg:pb-0` and leave 76px of dead space along the bottom of every
+       * desktop window. The literal has to stay in step with
+       * MOBILE_NAV_INSET above - Tailwind only emits arbitrary values it can
+       * see spelled out in the source, so it cannot be interpolated.
+       */
+      className="flex h-[100dvh] flex-col overflow-hidden pb-[calc(env(safe-area-inset-bottom,0px)+76px)] lg:pb-0"
+    >
       {/* header */}
       <header className="flex shrink-0 items-center gap-3 border-b border-ink-800 bg-ink-900 px-4 py-2.5">
         <Link to="/" className="font-display text-lg leading-none text-ink-100 hover:text-accent">
@@ -370,6 +427,22 @@ export function EditorPage() {
             {state.project.width}×{state.project.height} · {formatTime(state.project.durationMs)}
           </span>
           <UndoRedo />
+
+          {/* Panel toggles. Desktop only - on mobile the panels are sheets, so
+              there is nothing to collapse. */}
+          <div className="hidden items-center gap-1 lg:flex">
+            <PanelToggle
+              side="left"
+              open={leftOpen}
+              onToggle={() => setLeftOpen(!leftOpen)}
+            />
+            <PanelToggle
+              side="right"
+              open={rightOpen}
+              onToggle={() => setRightOpen(!rightOpen)}
+            />
+          </div>
+
           <button className="btn-primary hidden lg:inline-flex" onClick={() => setExportOpen(true)}>
             Export
           </button>
@@ -387,8 +460,14 @@ export function EditorPage() {
 
       {/* body */}
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {/* Desktop: a fixed left column. Mobile: this lives in a bottom sheet. */}
-        <aside className="hidden w-[300px] shrink-0 flex-col border-r border-ink-800 bg-ink-900 lg:flex">
+        {/* Desktop: a resizable, collapsible left column. Mobile: a sheet. */}
+        <aside
+          className={cn(
+            'hidden shrink-0 flex-col border-r border-ink-800 bg-ink-900',
+            leftOpen && 'lg:flex',
+          )}
+          style={{ width: leftWidth }}
+        >
           <div className="flex shrink-0 border-b border-ink-800">
             {(['style', 'transcript'] as const).map((tab) => (
               <button
@@ -407,26 +486,64 @@ export function EditorPage() {
           </div>
           <div className="min-h-0 flex-1">
             {leftTab === 'style' ? (
-              <StylePanel onAiAction={runAiAction} aiBusy={aiBusy} />
+              <StylePanel />
             ) : (
               <TranscriptPanel />
             )}
           </div>
         </aside>
 
+        {leftOpen && (
+          <ResizeHandle
+            size={leftWidth}
+            onResize={setLeftWidth}
+            min={220}
+            max={520}
+            direction="left"
+            label="Panel width"
+            className="hidden lg:block"
+          />
+        )}
+
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 bg-ink-950 p-2 sm:p-4 lg:p-6">
             <CanvasStage videoUrl={videoUrl} />
           </div>
-          {/* Taller on a phone than it was: the track needs room for a row of
-              bars plus the waveform, and a cramped one cannot be dragged
-              accurately with a finger. */}
-          <div className="h-[176px] shrink-0 border-t border-ink-800 sm:h-[190px]">
+          {/* Drag the divider to trade canvas for timeline. The handle is
+              deliberately present on every size, not just desktop: a fixed
+              height is worst exactly where the screen is smallest. */}
+          <ResizeHandle
+            size={timelineH}
+            onResize={setTimelineHeight}
+            min={140}
+            max={timelineMax}
+            direction="up"
+            label="Timeline height"
+          />
+          <div className="shrink-0 overflow-hidden" style={{ height: timelineH }}>
             <Timeline waveform={waveform} />
           </div>
         </main>
 
-        <aside className="hidden w-[320px] shrink-0 border-l border-ink-800 bg-ink-900 lg:block">
+        {rightOpen && (
+          <ResizeHandle
+            size={rightWidth}
+            onResize={setRightWidth}
+            min={260}
+            max={560}
+            direction="left"
+            label="Inspector width"
+            className="hidden lg:block"
+          />
+        )}
+
+        <aside
+          className={cn(
+            'hidden shrink-0 border-l border-ink-800 bg-ink-900',
+            rightOpen && 'lg:block',
+          )}
+          style={{ width: rightWidth }}
+        >
           <InspectorPanel />
         </aside>
       </div>
@@ -442,7 +559,14 @@ export function EditorPage() {
               onClick={() => setSheet(null)}
               aria-hidden
             />
-            <div className="fixed inset-x-0 bottom-[56px] z-40 flex h-[70vh] flex-col rounded-t-2xl border-t border-ink-700 bg-ink-900 shadow-2xl">
+            <div
+              className="fixed inset-x-2 z-40 flex flex-col overflow-hidden rounded-3xl border border-white/10 bg-ink-900/95 shadow-[0_16px_48px_rgba(0,0,0,0.6)] backdrop-blur-2xl"
+              style={{
+                bottom: `calc(${MOBILE_NAV_INSET} + 8px)`,
+                maxHeight: `calc(100dvh - ${MOBILE_NAV_INSET} - 96px)`,
+                height: '70vh',
+              }}
+            >
               <div className="flex shrink-0 items-center justify-between border-b border-ink-800 px-4 py-2.5">
                 <span className="text-sm font-medium capitalize text-ink-200">{sheet}</span>
                 <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setSheet(null)}>
@@ -450,7 +574,7 @@ export function EditorPage() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
-                {sheet === 'style' && <StylePanel onAiAction={runAiAction} aiBusy={aiBusy} />}
+                {sheet === 'style' && <StylePanel />}
                 {sheet === 'words' && <InspectorPanel />}
                 {sheet === 'transcript' && <TranscriptPanel />}
               </div>
@@ -458,7 +582,35 @@ export function EditorPage() {
           </>
         )}
 
-        <nav className="fixed inset-x-0 bottom-0 z-50 flex h-[56px] items-stretch border-t border-ink-800 bg-ink-900 pb-[env(safe-area-inset-bottom)]">
+        {/*
+          * A floating glass bar rather than a full-width strip welded to the
+          * bottom edge.
+          *
+          * It sits inset on all sides, so the rounded corners are actually
+          * visible and the page's own background shows through beneath it -
+          * which is what makes the blur read as glass rather than as a grey
+          * panel. The safe-area inset is added to the offset, not as padding
+          * inside the bar, so the pill keeps its shape on a notched phone
+          * instead of growing a tall dead strip along the bottom.
+          *
+          * Its height is fixed at MOBILE_NAV_H and the page reserves exactly
+          * that plus the gaps, so nothing it floats over can be covered.
+          */}
+        <nav
+          className={cn(
+            'fixed inset-x-3 z-50 flex items-stretch gap-1 rounded-[26px] p-1',
+            // Layered translucency: a tinted ground, a hairline highlight on
+            // the top edge, and a soft drop shadow to lift it off the canvas.
+            'border border-white/10 bg-ink-900/70 shadow-[0_10px_40px_rgba(0,0,0,0.55)] ring-1 ring-inset ring-white/5',
+            // Blur only where it is supported; without the fallback the bar
+            // would be semi-transparent over live video and unreadable.
+            'supports-[backdrop-filter]:bg-ink-900/55 supports-[backdrop-filter]:backdrop-blur-2xl supports-[backdrop-filter]:backdrop-saturate-150',
+          )}
+          style={{
+            height: MOBILE_NAV_H,
+            bottom: `calc(env(safe-area-inset-bottom, 0px) + ${MOBILE_NAV_GAP}px)`,
+          }}
+        >
           {([
             ['style', 'Style'],
             ['words', 'Text'],
@@ -467,19 +619,22 @@ export function EditorPage() {
             <button
               key={key}
               onClick={() => setSheet(sheet === key ? null : key)}
+              aria-pressed={sheet === key}
               className={cn(
-                'flex-1 text-xs font-medium transition',
-                sheet === key ? 'bg-ink-800 text-accent-soft' : 'text-ink-400',
+                'flex min-w-0 flex-1 items-center justify-center rounded-[20px] px-1 text-[11px] font-medium transition',
+                sheet === key
+                  ? 'bg-white/10 text-accent-soft shadow-inner ring-1 ring-white/10'
+                  : 'text-ink-300 active:bg-white/5',
               )}
             >
-              {label}
+              <span className="truncate">{label}</span>
             </button>
           ))}
           <button
             onClick={() => setExportOpen(true)}
-            className="flex-1 bg-accent text-xs font-semibold text-ink-950"
+            className="flex min-w-0 flex-1 items-center justify-center rounded-[20px] bg-accent px-1 text-[11px] font-semibold text-ink-950 shadow-lg transition active:brightness-95"
           >
-            Export
+            <span className="truncate">Export</span>
           </button>
         </nav>
       </div>
@@ -495,6 +650,61 @@ export function EditorPage() {
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * Collapse or reveal a side panel.
+ *
+ * An icon rather than a label so the header does not grow, and the glyph shows
+ * the direction the panel will travel - a chevron pointing at the edge means
+ * "tuck it away", pointing inwards means "bring it back".
+ */
+function PanelToggle({
+  side,
+  open,
+  onToggle,
+}: {
+  side: 'left' | 'right';
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const label = `${open ? 'Hide' : 'Show'} ${side} panel`;
+  // Left panel open -> chevron points left (out). Right panel open -> right.
+  const pointsLeft = side === 'left' ? open : !open;
+
+  return (
+    <button
+      onClick={onToggle}
+      title={label}
+      aria-label={label}
+      aria-pressed={open}
+      className={cn(
+        'flex h-8 w-8 items-center justify-center rounded-md border transition',
+        open
+          ? 'border-ink-700 bg-ink-850 text-ink-300 hover:border-ink-600 hover:text-ink-100'
+          : 'border-accent/40 bg-accent/10 text-accent-soft hover:border-accent/60',
+      )}
+    >
+      <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden fill="none" stroke="currentColor">
+        {/* The panel edge, then the chevron beside it. */}
+        <rect
+          x={side === 'left' ? 1.5 : 9.5}
+          y="2.5"
+          width="5"
+          height="11"
+          rx="1.5"
+          strokeWidth="1.2"
+          className={open ? 'opacity-100' : 'opacity-40'}
+        />
+        <path
+          d={pointsLeft ? 'M12.5 5.5 L9.5 8 L12.5 10.5' : 'M3.5 5.5 L6.5 8 L3.5 10.5'}
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
 
 function SaveIndicator({ status }: { status: string }) {
   const map: Record<string, { label: string; className: string }> = {

@@ -110,7 +110,7 @@ export function Timeline({ waveform }: Props) {
         ref={trackRef}
         // touch-none, or on a phone a drag scrolls the page instead of
         // scrubbing and the timeline is effectively read-only.
-        className="relative flex-1 cursor-text touch-none select-none overflow-hidden px-4 py-2"
+        className="relative flex-1 cursor-text touch-none select-none overflow-y-auto overflow-x-hidden px-4 py-2"
         onPointerDown={(e) => {
           setScrubbing(true);
           seekFromEvent(e.clientX);
@@ -131,7 +131,7 @@ export function Timeline({ waveform }: Props) {
         </div>
 
         {/* scenes */}
-        <div className="relative mb-1.5 h-9">
+        <div className="relative mb-2 h-11 shrink-0">
           {scenes.map((scene) => {
             const active = timeMs >= scene.startMs && timeMs <= scene.endMs;
             const selected = selection.sceneId === scene.id;
@@ -139,7 +139,7 @@ export function Timeline({ waveform }: Props) {
               <button
                 key={scene.id}
                 className={cn(
-                  'absolute top-0 h-full overflow-hidden rounded border px-2 text-left text-[11px] transition',
+                  'absolute top-0 flex h-full flex-col justify-center gap-0.5 overflow-hidden rounded-md border px-2 text-left text-[11px] transition',
                   active
                     ? 'border-accent/70 bg-accent/15 text-accent-soft'
                     : selected
@@ -183,7 +183,16 @@ export function Timeline({ waveform }: Props) {
 const MIN_LAYER_MS = 120;
 /** How close (in pixels) an edge must come to a landmark before it snaps. */
 const SNAP_PX = 6;
-const ROW_HEIGHT = 15;
+/*
+ * Row geometry.
+ *
+ * Was 15px per row carrying a 13px bar of 9px text - legible only just, and a
+ * hopeless drag target on touch, which is what made the whole track read as
+ * cramped. Now that the panel height is adjustable there is room to spend, so
+ * the bar is tall enough to read and to grab.
+ */
+const ROW_HEIGHT = 26;
+const BAR_HEIGHT = 22;
 
 type LayerDrag = {
   kind: 'move' | 'trim-start' | 'trim-end';
@@ -428,7 +437,7 @@ function LayerTrack({
       // No handler here on purpose: a pointerdown on empty track must fall
       // through to the scrub, and scrubbing should not clear the selection.
     >
-      <div className="relative" style={{ height: Math.max(64, rowCount * ROW_HEIGHT + 2) }}>
+      <div className="relative" style={{ height: Math.max(ROW_HEIGHT + 6, rowCount * ROW_HEIGHT + 4) }}>
         {placed.map(({ layer, row }) => {
           const selected = selection.layerId === layer.id;
           const dragging = drag?.layerId === layer.id;
@@ -436,7 +445,7 @@ function LayerTrack({
             <div
               key={layer.id}
               className={cn(
-                'absolute flex h-[13px] items-center overflow-hidden rounded-sm border text-left text-[9px] leading-[11px] transition-colors',
+                'absolute flex items-center overflow-hidden rounded border text-left text-[11px] leading-tight transition-colors',
                 selected
                   ? 'border-accent bg-accent/25 text-accent-soft'
                   : 'border-ink-700 bg-ink-800 text-ink-400 hover:border-ink-500',
@@ -448,7 +457,8 @@ function LayerTrack({
                 // True duration, so the bar is an honest picture of the range it
                 // covers; `minWidth` only keeps a very short one grabbable.
                 width: pct(layer.endMs - layer.startMs),
-                minWidth: 18,
+                minWidth: 22,
+                height: BAR_HEIGHT,
                 top: row * ROW_HEIGHT,
               }}
               onPointerDown={begin('move', layer)}

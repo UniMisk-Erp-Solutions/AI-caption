@@ -29,6 +29,8 @@ export function TranscriptPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   // The word this insertion field sits after, if one is open.
   const [insertAfterId, setInsertAfterId] = useState<string | null>(null);
+  // The word whose actions are on show. Null closes the bar.
+  const [activeId, setActiveId] = useState<string | null>(null);
 
   const heroWordIds = useMemo(() => {
     const ids = new Set<string>();
@@ -52,6 +54,7 @@ export function TranscriptPanel() {
 
   if (!state) return null;
   const words = state.transcript.words;
+  const activeWord = activeId ? (words.find((w) => w.id === activeId) ?? null) : null;
 
   return (
     <div className="flex h-full flex-col">
@@ -79,7 +82,7 @@ export function TranscriptPanel() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-3 py-2">
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-x-1.5 gap-y-2">
             {words.map((word) => {
               const active = timeMs >= word.startMs && timeMs <= word.endMs;
               const isHero = heroWordIds.has(word.id);
@@ -107,88 +110,126 @@ export function TranscriptPanel() {
 
               return (
                 <Fragment key={word.id}>
-                <span className="group relative inline-flex">
                   <button
-                    onClick={() => setTime(word.startMs + 10)}
+                    onClick={() => {
+                      setTime(word.startMs + 10);
+                      // Tapping selects, which is what reveals the actions
+                      // below. Tapping the selected word again clears it.
+                      setActiveId(activeId === word.id ? null : word.id);
+                    }}
                     onDoubleClick={() => setEditingId(word.id)}
-                    title={`${formatTime(word.startMs, true)} — double-click to edit`}
+                    title={`${formatTime(word.startMs, true)} — tap for actions, double-click to edit`}
                     className={cn(
-                      'rounded px-1.5 py-0.5 text-xs transition',
-                      active
-                        ? 'bg-accent/25 text-accent-soft'
-                        : isHero
-                          ? 'bg-ink-700 text-ink-100'
-                          : 'text-ink-300 hover:bg-ink-800',
-                      estimated && 'underline decoration-dotted decoration-ink-600 underline-offset-2',
+                      'rounded px-2 py-1 text-xs transition',
+                      activeId === word.id
+                        ? 'bg-accent text-ink-950'
+                        : active
+                          ? 'bg-accent/25 text-accent-soft'
+                          : isHero
+                            ? 'bg-ink-700 text-ink-100'
+                            : 'text-ink-300 hover:bg-ink-800',
+                      estimated &&
+                        activeId !== word.id &&
+                        'underline decoration-dotted decoration-ink-600 underline-offset-2',
                     )}
                   >
                     {word.text}
                   </button>
 
-                  {!isHero && (
-                    <button
-                      title="Make this the hero word for its scene"
-                      className="absolute -right-0.5 -top-1.5 hidden h-3.5 w-3.5 items-center justify-center rounded-full bg-accent text-[8px] text-ink-950 group-hover:flex"
-                      onClick={() => {
-                        const sceneId = sceneOfWord.get(word.id);
-                        const current = useEditorStore.getState().state;
-                        if (!sceneId || !current) return;
-                        const rebuilt = setSceneHero(current, sceneId, word.id);
-                        if (rebuilt) useEditorStore.getState().replaceScene(rebuilt);
+                  {/* The insertion field appears in flow, right where the new
+                      word will land, so "after this one" stays literal. */}
+                  {insertAfterId === word.id && (
+                    <input
+                      autoFocus
+                      placeholder="new word"
+                      className="field w-24 px-1.5 py-0.5 text-xs"
+                      onBlur={(e) => {
+                        const text = e.target.value.trim();
+                        if (text) insertWordAfter(word.id, text);
+                        setInsertAfterId(null);
                       }}
-                    >
-                      ★
-                    </button>
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') e.currentTarget.blur();
+                        if (e.key === 'Escape') {
+                          e.currentTarget.value = '';
+                          e.currentTarget.blur();
+                        }
+                      }}
+                    />
                   )}
-
-                  <button
-                    title="Delete this word"
-                    className="absolute -left-0.5 -top-1.5 hidden h-3.5 w-3.5 items-center justify-center rounded-full bg-ink-600 text-[8px] text-ink-100 group-hover:flex hover:bg-red-700"
-                    onClick={() => deleteWord(word.id)}
-                  >
-                    ×
-                  </button>
-
-                  <button
-                    title="Insert a word after this one"
-                    className="absolute -bottom-1.5 -right-0.5 hidden h-3.5 w-3.5 items-center justify-center rounded-full bg-ink-600 text-[8px] text-ink-100 group-hover:flex hover:bg-accent hover:text-ink-950"
-                    onClick={() => setInsertAfterId(word.id)}
-                  >
-                    +
-                  </button>
-                </span>
-
-                {/* Rendered in flow, right where the word will land, so
-                    "after this one" is literal rather than implied. */}
-                {insertAfterId === word.id && (
-                  <input
-                    autoFocus
-                    placeholder="new word"
-                    className="field w-24 px-1.5 py-0.5 text-xs"
-                    onBlur={(e) => {
-                      const text = e.target.value.trim();
-                      if (text) insertWordAfter(word.id, text);
-                      setInsertAfterId(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') e.currentTarget.blur();
-                      if (e.key === 'Escape') {
-                        e.currentTarget.value = '';
-                        e.currentTarget.blur();
-                      }
-                    }}
-                  />
-                )}
                 </Fragment>
               );
             })}
           </div>
 
           <p className="mt-4 text-[10px] leading-relaxed text-ink-600">
-            Click a word to jump to it. Double-click to fix it. Hover for ★ to
-            make it the hero of its scene, + to add a missing word after it, or ×
-            to remove it. Dotted words have estimated timings.
+            Tap a word to jump to it and show its actions. Double-click to
+            retype it. Dotted words have estimated timings.
           </p>
+        </div>
+      )}
+
+      {/*
+        * Actions for the selected word.
+        *
+        * These used to be three 14px circles pinned to the corners of each
+        * word, revealed on hover. They overlapped the words either side, they
+        * were far below a usable touch target, and hover does not exist on a
+        * phone or tablet at all - so on those devices the actions were
+        * unreachable and the layout looked broken.
+        *
+        * In flow at the foot of the panel instead: nothing can overlap
+        * anything, every target is full height, and the same interaction works
+        * with a finger and a mouse.
+        */}
+      {activeWord && (
+        <div className="shrink-0 border-t border-ink-800 bg-ink-900/95 px-3 py-2 backdrop-blur">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="min-w-0 truncate text-xs text-ink-200">
+              <span className="text-ink-500">Selected · </span>
+              {activeWord.text}
+            </span>
+            <button
+              className="shrink-0 text-[10px] uppercase tracking-wider text-ink-500 hover:text-ink-300"
+              onClick={() => setActiveId(null)}
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="grid grid-cols-4 gap-1.5">
+            <ActionButton
+              label="Hero"
+              hint="Make this the hero word of its scene"
+              disabled={heroWordIds.has(activeWord.id)}
+              onClick={() => {
+                const sceneId = sceneOfWord.get(activeWord.id);
+                const current = useEditorStore.getState().state;
+                if (!sceneId || !current) return;
+                const rebuilt = setSceneHero(current, sceneId, activeWord.id);
+                if (rebuilt) useEditorStore.getState().replaceScene(rebuilt);
+              }}
+            />
+            <ActionButton
+              label="Edit"
+              hint="Retype this word"
+              onClick={() => setEditingId(activeWord.id)}
+            />
+            <ActionButton
+              label="Insert"
+              hint="Add a missing word after this one"
+              onClick={() => setInsertAfterId(activeWord.id)}
+            />
+            <ActionButton
+              label="Delete"
+              hint="Remove this word"
+              danger
+              onClick={() => {
+                deleteWord(activeWord.id);
+                setActiveId(null);
+              }}
+            />
+          </div>
         </div>
       )}
 
@@ -198,6 +239,44 @@ export function TranscriptPanel() {
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * One action in the selected-word bar.
+ *
+ * min-h-[40px] is the point of it: the icons this replaced were 14px, which is
+ * roughly a third of a comfortable touch target in each direction.
+ */
+function ActionButton({
+  label,
+  hint,
+  onClick,
+  disabled,
+  danger,
+}: {
+  label: string;
+  hint: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={hint}
+      className={cn(
+        'flex min-h-[40px] items-center justify-center rounded-md border px-1 text-[11px] font-medium transition',
+        disabled
+          ? 'cursor-not-allowed border-ink-800 text-ink-600'
+          : danger
+            ? 'border-red-900/60 text-red-300 hover:border-red-700 hover:bg-red-950/40'
+            : 'border-ink-700 text-ink-200 hover:border-ink-500 hover:bg-ink-800',
+      )}
+    >
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
 
 function PasteTranscriptModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const state = useEditorStore((s) => s.state);

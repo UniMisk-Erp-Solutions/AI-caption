@@ -1,43 +1,34 @@
 import {
-  COMPOSITION_IDS,
   PRESET_IDS,
   PRESET_TAGS,
   fontFamilyStack,
-  getComposition,
   getFont,
   getPreset,
   relatedPresets,
   type PresetId,
 } from '@kc/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Section, Slider, Spinner } from '../../components/ui';
+import { Section } from '../../components/ui';
 import { cn } from '../../lib/cn';
-import { hasApi } from '../../lib/env';
 import { preloadFontsForPicker } from '../../fonts/fonts';
-import { useActiveScene, useEditorStore } from '../../stores/editorStore';
+import { useEditorStore } from '../../stores/editorStore';
 
 /**
  * The style panel.
  *
- * The important idea: changing the look is a *local, instant* operation.
- * Swapping between 135 presets, hero contrast, motion and rotation all re-run
- * the composer in the browser. Nothing here costs an API call, so trying twenty
- * looks is free and takes twenty seconds.
+ * One job: pick the pairing. Changing the look is a local, instant operation -
+ * all 135 presets re-run the composer in the browser, so trying twenty costs
+ * nothing and takes seconds.
  *
- * The AI actions at the bottom are the only things that touch the network.
+ * Picking one restyles in place. It deliberately does not re-lay out, so a
+ * position or animation set by hand survives being tried against a new look.
  */
 
-interface Props {
-  onAiAction: (instruction: string, scope: 'project' | 'scene') => Promise<void>;
-  aiBusy: string | null;
-}
-
-export function StylePanel({ onAiAction, aiBusy }: Props) {
+export function StylePanel() {
   const state = useEditorStore((s) => s.state);
   const setDirection = useEditorStore((s) => s.setDirection);
   const regenerateWithPreset = useEditorStore((s) => s.regenerateWithPreset);
   const restyleWithPreset = useEditorStore((s) => s.restyleWithPreset);
-  const scene = useActiveScene();
 
   const [query, setQuery] = useState('');
   const [tag, setTag] = useState<string | null>(null);
@@ -115,138 +106,11 @@ export function StylePanel({ onAiAction, aiBusy }: Props) {
         <p className="mt-3 text-[11px] leading-relaxed text-ink-500">{preset.description}</p>
       </Section>
 
-      <Section title="Direction">
-        <div className="space-y-4">
-          <Slider
-            label="Hero contrast"
-            value={direction.heroContrast}
-            onChange={(heroContrast) => setDirection({ heroContrast })}
-            min={0.6}
-            max={1.8}
-            step={0.05}
-            format={(v) => `${v.toFixed(2)}×`}
-          />
-          <Slider
-            label="Scale"
-            value={direction.scale}
-            onChange={(scale) => setDirection({ scale })}
-            min={0.6}
-            max={1.6}
-            step={0.05}
-            format={(v) => `${Math.round(v * 100)}%`}
-          />
-          <Slider
-            label="Motion"
-            value={direction.motionLevel}
-            onChange={(motionLevel) => setDirection({ motionLevel })}
-            format={motionLabel}
-          />
-          <Slider
-            label="Rotation"
-            value={direction.rotationLevel}
-            onChange={(rotationLevel) => setDirection({ rotationLevel })}
-            format={(v) => (v < 0.05 ? 'none' : v < 0.4 ? 'subtle' : 'loose')}
-          />
-        </div>
-
-        <button
-          className="btn-outline mt-4 w-full"
-          onClick={() => regenerateWithPreset(direction.preset)}
-        >
-          Re-lay out every scene
-        </button>
-      </Section>
-
-      {scene && (
-        <Section title="This scene">
-          {/* Composition is geometry, so picking one re-runs the composer for
-              this scene rather than patching the existing layers. */}
-          <div className="grid grid-cols-2 gap-1.5">
-            {COMPOSITION_IDS.map((id) => (
-              <button
-                key={id}
-                onClick={() => applyComposition(id)}
-                className={cn(
-                  'min-h-[38px] rounded border px-2 py-1.5 text-left text-[10px] leading-tight transition',
-                  scene.compositionId === id
-                    ? 'border-accent bg-accent/15 text-accent-soft'
-                    : 'border-ink-700 bg-ink-850 text-ink-400 hover:border-ink-600 hover:text-ink-200',
-                )}
-                title={getComposition(id).vibe}
-              >
-                {getComposition(id).label}
-              </button>
-            ))}
-          </div>
-        </Section>
-      )}
-
-      <Section title="AI">
-        {!hasApi && (
-          <p className="mb-3 rounded border border-ink-700 bg-ink-850 px-2.5 py-2 text-[11px] leading-relaxed text-ink-400">
-            Running in local mode. Everything above works offline — connect the
-            API to let Gemma read your frames and direct the layout.
-          </p>
-        )}
-        <div className="space-y-1.5">
-          {AI_ACTIONS.map((action) => (
-            <button
-              key={action.label}
-              disabled={!hasApi || aiBusy !== null}
-              onClick={() => void onAiAction(action.instruction, action.scope)}
-              className="btn-outline min-h-[44px] w-full justify-between text-left"
-            >
-              <span>{action.label}</span>
-              {aiBusy === action.label ? (
-                <Spinner />
-              ) : (
-                <span className="text-[10px] uppercase tracking-wider text-ink-600">
-                  {action.scope}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </Section>
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-
-const AI_ACTIONS: Array<{ label: string; instruction: string; scope: 'project' | 'scene' }> = [
-  { label: 'Regenerate whole design', instruction: '', scope: 'project' },
-  { label: 'Redesign this scene', instruction: '', scope: 'scene' },
-  { label: 'Try another composition', instruction: 'Use a different composition and a different hero word.', scope: 'scene' },
-  { label: 'Make it more editorial', instruction: 'More editorial: quieter, more whitespace, one clear hero word.', scope: 'project' },
-  { label: 'Make it more minimal', instruction: 'Strip it back. Fewer lines, smaller type, much more negative space.', scope: 'project' },
-  { label: 'Make it more playful', instruction: 'More playful and energetic. Looser line breaks, bolder hero words.', scope: 'project' },
-  { label: 'Bolder typography', instruction: 'Push the size contrast much further. Make the hero words dominate the frame.', scope: 'project' },
-  { label: 'Move text off the subject', instruction: 'Reposition text into empty areas of each frame. Nothing may cover a face.', scope: 'project' },
-];
-
-function applyComposition(compositionId: string): void {
-  const store = useEditorStore.getState();
-  const state = store.state;
-  if (!state) return;
-
-  const scene = state.design.scenes.find(
-    (s) => store.timeMs >= s.startMs && store.timeMs <= s.endMs,
-  );
-  if (!scene) return;
-
-  void import('../../lib/recompose').then(({ recomposeScene }) => {
-    const rebuilt = recomposeScene(state, scene.id, { compositionId });
-    if (rebuilt) store.replaceScene(rebuilt);
-  });
-}
-
-function motionLabel(value: number): string {
-  if (value < 0.2) return 'still';
-  if (value < 0.45) return 'gentle';
-  if (value < 0.7) return 'lively';
-  return 'loud';
-}
 
 function TagChip({
   active,
