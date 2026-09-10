@@ -97,6 +97,10 @@ export function EditorPage() {
   const [rightOpen, setRightOpen] = usePersisted('kc.layout.rightPanel', true);
   const [leftWidth, setLeftWidth] = usePersisted('kc.layout.leftWidth', 300);
   const [rightWidth, setRightWidth] = usePersisted('kc.layout.rightWidth', 320);
+
+  // True while either panel is showing, so one button can collapse both and
+  // restore both without getting stuck on a half-open state.
+  const panelsOpen = leftOpen || rightOpen;
   // Which panel the bottom sheet shows on small screens. Null = canvas only.
   const [sheet, setSheet] = useState<'style' | 'words' | 'transcript' | null>(null);
 
@@ -431,6 +435,51 @@ export function EditorPage() {
           {/* Panel toggles. Desktop only - on mobile the panels are sheets, so
               there is nothing to collapse. */}
           <div className="hidden items-center gap-1 lg:flex">
+            {/*
+              * Both panels at once, which is the common case: clearing the
+              * chrome to look at the video, then putting it back. Doing that
+              * through the two individual toggles takes two clicks each way
+              * and leaves a half-collapsed state in between.
+              *
+              * "Any open" collapses, "none open" restores both, so the button
+              * always does the obvious thing from whatever state it is in -
+              * including the half-open states the individual toggles create.
+              */}
+            <button
+              onClick={() => {
+                const next = !panelsOpen;
+                setLeftOpen(next);
+                setRightOpen(next);
+              }}
+              title={panelsOpen ? 'Hide both panels' : 'Show both panels'}
+              aria-label={panelsOpen ? 'Hide both panels' : 'Show both panels'}
+              aria-pressed={panelsOpen}
+              className={cn(
+                'flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition',
+                panelsOpen
+                  ? 'border-ink-700 bg-ink-850 text-ink-300 hover:border-ink-600 hover:text-ink-100'
+                  : 'border-accent/40 bg-accent/10 text-accent-soft hover:border-accent/60',
+              )}
+            >
+              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden fill="none" stroke="currentColor">
+                {/* Arrows pointing outwards to expand, inwards to collapse. */}
+                {panelsOpen ? (
+                  <>
+                    <path d="M6.5 4.5 L3.5 8 L6.5 11.5" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M9.5 4.5 L12.5 8 L9.5 11.5" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M3.5 4.5 L6.5 8 L3.5 11.5" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M12.5 4.5 L9.5 8 L12.5 11.5" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  </>
+                )}
+              </svg>
+              {panelsOpen ? 'Focus' : 'Panels'}
+            </button>
+
+            <span className="mx-0.5 h-5 w-px bg-ink-800" aria-hidden />
+
             <PanelToggle
               side="left"
               open={leftOpen}
@@ -499,7 +548,7 @@ export function EditorPage() {
             onResize={setLeftWidth}
             min={220}
             max={520}
-            direction="left"
+            grows="right"
             label="Panel width"
             className="hidden lg:block"
           />
@@ -517,7 +566,7 @@ export function EditorPage() {
             onResize={setTimelineHeight}
             min={140}
             max={timelineMax}
-            direction="up"
+            grows="up"
             label="Timeline height"
           />
           <div className="shrink-0 overflow-hidden" style={{ height: timelineH }}>
@@ -531,7 +580,7 @@ export function EditorPage() {
             onResize={setRightWidth}
             min={260}
             max={560}
-            direction="left"
+            grows="left"
             label="Inspector width"
             className="hidden lg:block"
           />

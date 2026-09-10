@@ -21,11 +21,20 @@ export interface ResizeHandleProps {
   min: number;
   max: number;
   /**
-   * Which way a positive drag grows the panel. `up` suits a panel pinned to
-   * the bottom (dragging the divider upwards makes it taller); `left` suits one
-   * pinned to the right edge.
+   * The pointer direction that makes the panel BIGGER.
+   *
+   * Named after the gesture rather than after the panel's position, because
+   * the two are opposite and conflating them is how this went wrong: a single
+   * "horizontal" mode is correct for a panel pinned to the right edge (whose
+   * handle is on its left, so dragging left grows it) and exactly backwards
+   * for one pinned to the left edge (handle on its right, dragging right grows
+   * it). Stating the gesture leaves nothing to infer.
+   *
+   *   'up'    - panel below the handle   (the timeline)
+   *   'right' - panel left of the handle (the style panel)
+   *   'left'  - panel right of the handle (the inspector)
    */
-  direction: 'up' | 'left';
+  grows: 'up' | 'left' | 'right';
   /** Keyboard step, and the nudge applied by arrow keys. */
   step?: number;
   label: string;
@@ -37,13 +46,15 @@ export function ResizeHandle({
   onResize,
   min,
   max,
-  direction,
+  grows,
   step = 24,
   label,
   className,
 }: ResizeHandleProps) {
   const start = useRef<{ pointer: number; size: number } | null>(null);
-  const vertical = direction === 'up';
+  const vertical = grows === 'up';
+  // +1 when moving towards larger coordinates grows the panel.
+  const sign = grows === 'right' ? 1 : -1;
 
   const clamp = useCallback((value: number) => Math.min(max, Math.max(min, value)), [min, max]);
 
@@ -56,9 +67,7 @@ export function ResizeHandle({
     const from = start.current;
     if (!from) return;
     const now = vertical ? event.clientY : event.clientX;
-    // Both supported directions grow as the pointer moves towards the origin,
-    // hence the negated delta.
-    onResize(clamp(from.size + (from.pointer - now)));
+    onResize(clamp(from.size + (now - from.pointer) * sign));
   };
 
   const onPointerUp = (event: React.PointerEvent) => {
@@ -84,8 +93,9 @@ export function ResizeHandle({
       onKeyDown={(event) => {
         // Keyboard access matters more than usual here: a divider is otherwise
         // the one piece of layout that cannot be reached without a pointer.
-        const grow = vertical ? 'ArrowUp' : 'ArrowLeft';
-        const shrink = vertical ? 'ArrowDown' : 'ArrowRight';
+        // The arrow keys mirror the drag exactly, for the same reason.
+        const grow = vertical ? 'ArrowUp' : grows === 'right' ? 'ArrowRight' : 'ArrowLeft';
+        const shrink = vertical ? 'ArrowDown' : grows === 'right' ? 'ArrowLeft' : 'ArrowRight';
         if (event.key === grow) {
           event.preventDefault();
           onResize(clamp(size + step));
